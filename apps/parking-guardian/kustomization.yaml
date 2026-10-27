@@ -20,7 +20,8 @@ labels:
 resources:
   - namespace.yaml
   - serviceaccount-backend.yaml
-  # 다음 조각에서 추가: externalsecret.yaml, configmap-nginx.yaml, backend-deployment.yaml, backend-service.yaml,
+  - externalsecret.yaml
+  # 다음 조각에서 추가: configmap-nginx.yaml, backend-deployment.yaml, backend-service.yaml,
   #                   frontend-deployment.yaml, frontend-service.yaml, ingress.yaml
 
 # ConfigMap backend-config = config.env(Terraform 출력값) + 아래 고정값(공개).
@@ -46,3 +47,44 @@ images:
     newTag: ffdb75e
   - name: parking-guardian/frontend
     newTag: ffdb75e
+
+# < replacements > 매니페스트의 자리표시자를 ConfigMap backend-config(config.env)의 값으로 바꾼다.
+# source: 어디서 값을 가져오나. target: 어느 리소스의 어느 필드에 넣나.
+# fieldPaths 의 [secretKey=SECRET_KEY] 는 "리스트에서 secretKey 가 SECRET_KEY 인 항목" 을 고르는 kustomize 문법.
+# 생성된 ConfigMap 이름에 해시가 붙어도 select.name 은 원래 이름(backend-config)으로 쓴다.
+replacements:
+  # 비밀 이름 3개 → ExternalSecret
+  - source:
+      kind: ConfigMap
+      name: backend-config
+      fieldPath: data.SECRET_NAME_APP
+    targets:
+      - select:
+          kind: ExternalSecret
+          name: backend-secrets
+        fieldPaths:
+          - spec.data.[secretKey=SECRET_KEY].remoteRef.key
+          - spec.data.[secretKey=JWT_SECRET].remoteRef.key
+  - source:
+      kind: ConfigMap
+      name: backend-config
+      fieldPath: data.SECRET_NAME_SEED
+    targets:
+      - select:
+          kind: ExternalSecret
+          name: backend-secrets
+        fieldPaths:
+          - spec.data.[secretKey=SEED_ADMIN_PASSWORD].remoteRef.key
+          - spec.data.[secretKey=SEED_DEVICE_KEY_SECRET].remoteRef.key
+  - source:
+      kind: ConfigMap
+      name: backend-config
+      fieldPath: data.RDS_SECRET_ARN
+    targets:
+      - select:
+          kind: ExternalSecret
+          name: backend-secrets
+        fieldPaths:
+          - spec.data.[secretKey=DB_USER].remoteRef.key
+          - spec.data.[secretKey=DB_PASSWORD].remoteRef.key
+  # 다음 조각에서 추가: ECR_BACKEND/ECR_FRONTEND → Deployment image, APP_HOST·ACM_CERTIFICATE_ARN → Ingress
