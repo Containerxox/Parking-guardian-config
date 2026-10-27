@@ -1,0 +1,30 @@
+# 앱 1벌(apps/parking-guardian/). Argo CD 가 kustomize 를 돌려 kubectl kustomize 와 같은 결과를 만든다(config.env 가 Git 에 있어야 하는 이유).
+#
+# 변경 반영: 앱 리포 CI 가 kustomization.yaml 의 images: 태그를 커밋 → Argo CD 가 ≤120초 안에 폴링으로 감지 → diff → 자동 sync →
+#   Deployment 이미지 교체 → RollingUpdate(새 Pod Ready 뒤 옛 Pod 종료). 모델 버전(config.env), nginx.conf 변경도 같은 길.
+# 기존 리소스 인수: kubectl apply -k 로 만든 것과 이름·내용이 같으므로 첫 sync 는 추적 어노테이션만 추가한다(Pod 재시작 없음).
+# 이후 kubectl apply -k 는 하지 않는다. 손으로 바꾼 것은 selfHeal 이 Git 상태로 되돌린다.
+#
+# !! 이 Application 을 지우면 Ingress 가 지워져 ALB 가 사라진다(finalizer). 의도된 teardown 경로다. !!
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: parking-guardian
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Containerxox/Parking-guardian-config.git
+    targetRevision: main
+    path: apps/parking-guardian
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: parking-guardian
+  syncPolicy:
+    automated:
+      prune: true    # Git 에서 지운 리소스는 클러스터에서도 지운다(해시 바뀐 옛 ConfigMap 정리 포함)
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false # Namespace 는 kustomization 의 namespace.yaml 이 만든다(Argo CD 가 따로 만들면 소유가 둘로 갈린다)

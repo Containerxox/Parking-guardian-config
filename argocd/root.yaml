@@ -1,0 +1,21 @@
+# app-of-apps 의 뿌리. 이 하나만 kubectl apply 로 만들고(부트스트랩 1회), 나머지 Application 은 argocd/apps/ 에서 Git 으로 관리한다.
+#   kubectl apply -f argocd/root.yaml
+# finalizer 를 두지 않는다: root 를 지워도 자식 Application 과 앱 리소스는 남는다(root 삭제 = 전체 삭제가 되지 않게).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Containerxox/Parking-guardian-config.git
+    targetRevision: main
+    path: argocd/apps
+  destination:
+    server: https://kubernetes.default.svc # Argo CD 가 설치된 이 클러스터
+    namespace: argocd                      # 자식 Application 오브젝트가 놓이는 곳
+  syncPolicy:
+    automated:
+      prune: true    # argocd/apps/ 에서 파일을 지우면 그 Application 도 지운다
+      selfHeal: true # 손으로 바꾼 것을 Git 상태로 되돌린다
