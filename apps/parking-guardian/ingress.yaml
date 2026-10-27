@@ -1,0 +1,60 @@
+# ALB Ingress (설계 4.4). AWS Load Balancer Controller(infra platform 스택이 Helm 으로 설치)가 이 오브젝트를 보고
+# ALB, 리스너, 타깃 그룹을 만든다. Ingress 를 지우면 컨트롤러가 그것들을 거둔다.
+#
+# 자리표시자 3개(APP_HOST, ACM_CERTIFICATE_ARN, ALB_SECURITY_GROUP_ID)는 kustomization.yaml 의 replacements 가
+# ConfigMap backend-config(config.env)의 값으로 바꾼다. 도메인·ARN·SG ID 는 이 파일에 없다.
+#
+# 타깃 그룹의 Health Check 는 Service 별로 다르므로(backend /readyz, frontend /healthz) 각 Service 의 어노테이션에 둔다.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: parking-guardian
+  namespace: parking-guardian
+  annotations:
+    # --- 어떤 ALB 인가 ---
+    alb.ingress.kubernetes.io/scheme: internet-facing # Public Subnet(kubernetes.io/role/elb=1 태그로 자동 발견)에 놓는다
+    alb.ingress.kubernetes.io/target-type: ip         # Pod IP 로 직접. NodePort 홉 없음. Service 는 ClusterIP 로 충분
+    # ALB 이름 고정. infra dns-record 스택이 data "aws_lb" { name = "parking-guardian" } 로 이 이름을 조회한다(계약표).
+    # 없으면 컨트롤러가 k8s-<ns>-<ingress>-<해시> 로 지어 조회가 불안정하다.
+    alb.ingress.kubernetes.io/load-balancer-name: parking-guardian
+
+    # --- 리스너: 80 은 443 으로 리다이렉트, 443 은 ACM 인증서로 TLS 종단 ---
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/certificate-arn: ACM_CERTIFICATE_ARN
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06 # TLS 1.2 이상
+
+    # --- 보안 그룹: network 스택의 alb SG(0.0.0.0/0 → 443, 80; node SG 로 5000, 8080) ---
+    # 컨트롤러가 SG 를 새로 만들지 않고 이것을 붙인다. node SG 에 "alb SG 에서 5000·8080 허용" 이 이미 있으므로
+    # 컨트롤러의 백엔드 SG 규칙 관리는 끈다(켜면 컨트롤러가 노드 SG 에 규칙을 추가·삭제한다).
+    alb.ingress.kubernetes.io/security-groups: ALB_SECURITY_GROUP_ID
+    alb.ingress.kubernetes.io/manage-backend-security-group-rules: "false"
+
+    # --- 속성: 첫 추론 24~34초 대비 idle 120초 (gunicorn timeout 120 과 짝) ---
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=120
+
+    # ALB·타깃 그룹에 붙는 AWS 태그. Terraform 이 만든 리소스와 같은 Project 태그로 비용을 묶어 본다.
+    alb.ingress.kubernetes.io/tags: Project=parking-guardian,Phase=1,ManagedBy=alb-controller
+spec:
+  # Helm 차트가 만든 IngressClass. (옛 방식 kubernetes.io/ingress.class 어노테이션 대신)
+  ingressClassName: alb
+
+  rules:
+    - host: APP_HOST # parking.<도메인>. 다른 Host 헤더로 온 요청은 ALB 기본 동작(404)
+      http:
+        paths:
+          # Prefix /api → ALB 규칙 "/api" 와 "/api/*". 더 구체적인 경로가 먼저 평가된다.
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  name: http # 5000
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  name: http # 8080

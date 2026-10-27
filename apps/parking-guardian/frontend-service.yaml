@@ -6,6 +6,12 @@ metadata:
   namespace: parking-guardian
   labels:
     app.kubernetes.io/name: frontend
+  # ALB 타깃 그룹 Health Check. nginx.conf 의 location = /healthz.
+  annotations:
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "10"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/success-codes: "200"
 spec:
   type: ClusterIP
   selector:

@@ -25,7 +25,7 @@ resources:
   - backend-service.yaml
   - frontend-deployment.yaml
   - frontend-service.yaml
-  # 다음 조각에서 추가: ingress.yaml
+  - ingress.yaml
 
 # ConfigMap backend-config = config.env(Terraform 출력값) + 아래 고정값(공개).
 # 이름 뒤에 내용 해시가 붙는다(backend-config-abc123). 값이 바뀌면 이름이 바뀌고, 참조하는 Deployment 가 롤링 재시작된다.
@@ -125,4 +125,34 @@ replacements:
         options:
           delimiter: ":"
           index: 0
-  # 다음 조각에서 추가: APP_HOST·ACM_CERTIFICATE_ARN → Ingress
+  # Ingress: 호스트, 인증서 ARN, ALB SG. 어노테이션 키에 "." 과 "/" 가 있어 [ ] 로 감싼다.
+  - source:
+      kind: ConfigMap
+      name: backend-config
+      fieldPath: data.APP_HOST
+    targets:
+      - select:
+          kind: Ingress
+          name: parking-guardian
+        fieldPaths:
+          - spec.rules.0.host
+  - source:
+      kind: ConfigMap
+      name: backend-config
+      fieldPath: data.ACM_CERTIFICATE_ARN
+    targets:
+      - select:
+          kind: Ingress
+          name: parking-guardian
+        fieldPaths:
+          - metadata.annotations.[alb.ingress.kubernetes.io/certificate-arn]
+  - source:
+      kind: ConfigMap
+      name: backend-config
+      fieldPath: data.ALB_SECURITY_GROUP_ID
+    targets:
+      - select:
+          kind: Ingress
+          name: parking-guardian
+        fieldPaths:
+          - metadata.annotations.[alb.ingress.kubernetes.io/security-groups]

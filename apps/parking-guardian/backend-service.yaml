@@ -7,6 +7,15 @@ metadata:
   namespace: parking-guardian
   labels:
     app.kubernetes.io/name: backend
+  # ALB 타깃 그룹의 Health Check (Ingress 가 아니라 Service 에 두면 Service 별로 다르게 할 수 있다).
+  # /readyz 는 DB 까지 본다. 10초 간격, 연속 2회 성공이면 healthy, 3회 실패면 unhealthy.
+  # 복구 시간 측정(2.1절 5번)에 이 값이 들어간다: 새 Pod 가 트래픽을 받기까지 최소 20초.
+  annotations:
+    alb.ingress.kubernetes.io/healthcheck-path: /readyz
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "10"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "3"
+    alb.ingress.kubernetes.io/success-codes: "200"
 spec:
   type: ClusterIP
   selector:
