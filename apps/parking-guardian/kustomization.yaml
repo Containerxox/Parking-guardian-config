@@ -21,8 +21,7 @@ resources:
   - namespace.yaml
   - serviceaccount-backend.yaml
   - externalsecret.yaml
-  # 다음 조각에서 추가: configmap-nginx.yaml, backend-deployment.yaml, backend-service.yaml,
-  #                   frontend-deployment.yaml, frontend-service.yaml, ingress.yaml
+  # 다음 조각에서 추가: backend-deployment.yaml, backend-service.yaml, frontend-deployment.yaml, frontend-service.yaml, ingress.yaml
 
 # ConfigMap backend-config = config.env(Terraform 출력값) + 아래 고정값(공개).
 # 이름 뒤에 내용 해시가 붙는다(backend-config-abc123). 값이 바뀌면 이름이 바뀌고, 참조하는 Deployment 가 롤링 재시작된다.
@@ -38,6 +37,12 @@ configMapGenerator:
       - SEED_DEMO_DATA=1          # 시작 때 flask seed (없는 것만 만든다)
       - MAX_UPLOAD_MB=15
       - EMAIL_BACKEND=console     # SES 는 뒤 Phase
+
+  # frontend nginx 설정. 파일 그대로 ConfigMap 의 키 nginx.conf 가 된다. 이것도 해시가 붙어 바뀌면 frontend 가 롤링 재시작된다.
+  # (설계 6.2 는 configmap-nginx.yaml 로 적었지만, 손으로 쓴 ConfigMap 은 내용이 바뀌어도 Pod 가 재시작되지 않아 생성기로 바꿨다.)
+  - name: frontend-nginx
+    files:
+      - nginx.conf
 
 # 이미지 태그. 매니페스트의 image 는 "parking-guardian/backend:placeholder" 처럼 레지스트리 없는 이름이고,
 # 여기서 newTag 를 붙인 뒤 replacements 가 레지스트리 주소(config.env 의 ECR_*)를 앞에 채운다.
