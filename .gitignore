@@ -1,7 +1,5 @@
-# Terraform 출력값(계정 ID, 도메인, ARN, RDS 호스트)이 들어가는 파일. 공개 금지.
-config.env
-*.env
-!*.env.example
+# config.env 는 커밋한다(2026-10-27 결정): 값은 Terraform 출력값(계정 ID, 도메인, ARN, 호스트) 같은 식별자뿐이고
+# 자격 증명은 Secrets Manager → ESO 로만 간다. Argo CD 가 Git 에서 kustomize 를 빌드하므로 Git 에 있어야 한다.
 
 # 클러스터 접근
 kubeconfig*
