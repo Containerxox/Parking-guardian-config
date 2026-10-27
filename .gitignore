@@ -1,0 +1,14 @@
+# Terraform 출력값(계정 ID, 도메인, ARN, RDS 호스트)이 들어가는 파일. 공개 금지.
+config.env
+*.env
+!*.env.example
+
+# 클러스터 접근
+kubeconfig*
+.env
+*.pem
+*.key
+
+# Claude Code
+CLAUDE.md
+.claude/

@@ -1,0 +1,48 @@
+# Parking Guardian 앱 1벌. Kustomize 단일 구성(overlay 없음. 환경이 하나다).
+# 적용: kubectl apply -k apps/parking-guardian/   (먼저 config.env 가 있어야 한다. README)
+#
+# 값의 출처 3가지:
+#   1) 이 리포의 매니페스트           공개. 구조·고정값
+#   2) config.env (gitignore)        Terraform 출력값. configMapGenerator 가 ConfigMap backend-config 로 만든다
+#   3) images: 의 태그               앱 리포 커밋 짧은 해시. 앱 리포의 CI 가 이 줄을 갱신한다
+# 계정 ID·도메인·ARN 은 2) 에만 있고 1) 에는 없다. 매니페스트 안에서 그 값이 필요한 자리(이미지 주소, Ingress host, ACM ARN,
+# 비밀 이름)는 자리표시자로 두고, 아래 replacements 가 ConfigMap 의 값으로 바꿔 넣는다(Deployment·Ingress 단계에서 추가).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: parking-guardian
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: parking-guardian
+    includeSelectors: false # Selector 에는 넣지 않는다(바꾸면 Deployment 재생성이 필요해지므로)
+
+resources:
+  - namespace.yaml
+  - serviceaccount-backend.yaml
+  # 다음 조각에서 추가: externalsecret.yaml, configmap-nginx.yaml, backend-deployment.yaml, backend-service.yaml,
+  #                   frontend-deployment.yaml, frontend-service.yaml, ingress.yaml
+
+# ConfigMap backend-config = config.env(Terraform 출력값) + 아래 고정값(공개).
+# 이름 뒤에 내용 해시가 붙는다(backend-config-abc123). 값이 바뀌면 이름이 바뀌고, 참조하는 Deployment 가 롤링 재시작된다.
+configMapGenerator:
+  - name: backend-config
+    envs:
+      - config.env
+    literals:
+      - STORAGE_BACKEND=s3        # 사진은 S3 (adapters/storage.py)
+      - INFERENCE_BACKEND=yolo
+      - COOKIE_SECURE=true        # HTTPS 만(ALB 가 종단). 쿠키가 평문으로 나가지 않는다
+      - DB_SSLMODE=require        # RDS 파라미터 그룹 rds.force_ssl=1 과 짝
+      - SEED_DEMO_DATA=1          # 시작 때 flask seed (없는 것만 만든다)
+      - MAX_UPLOAD_MB=15
+      - EMAIL_BACKEND=console     # SES 는 뒤 Phase
+
+# 이미지 태그. 매니페스트의 image 는 "parking-guardian/backend:placeholder" 처럼 레지스트리 없는 이름이고,
+# 여기서 newTag 를 붙인 뒤 replacements 가 레지스트리 주소(config.env 의 ECR_*)를 앞에 채운다.
+# newTag 는 앱 리포의 커밋 짧은 해시. 앱 리포의 CI(build-push.yml 2단계)가 이 두 줄을 커밋한다.
+images:
+  - name: parking-guardian/backend
+    newTag: ffdb75e
+  - name: parking-guardian/frontend
+    newTag: ffdb75e

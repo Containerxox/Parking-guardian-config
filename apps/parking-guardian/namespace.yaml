@@ -1,0 +1,7 @@
+# 앱 전용 Namespace. infra cluster 스택의 backend Pod Identity 연결이 이 이름과 ServiceAccount backend 를 가리킨다(계약표).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: parking-guardian
+  labels:
+    app.kubernetes.io/part-of: parking-guardian
