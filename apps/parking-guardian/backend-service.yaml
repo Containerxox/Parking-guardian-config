@@ -1,0 +1,17 @@
+# backend Pod 의 고정 주소. ALB 는 IP 타깃 모드라 이 Service 의 엔드포인트(Pod IP)로 직접 보낸다.
+# 그래서 ClusterIP 로 충분하고 NodePort 가 필요 없다. Ingress 규칙 /api/* 가 이 Service 를 가리킨다.
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: parking-guardian
+  labels:
+    app.kubernetes.io/name: backend
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: backend
+  ports:
+    - name: http
+      port: 5000
+      targetPort: http

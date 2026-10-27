@@ -21,7 +21,9 @@ resources:
   - namespace.yaml
   - serviceaccount-backend.yaml
   - externalsecret.yaml
-  # 다음 조각에서 추가: backend-deployment.yaml, backend-service.yaml, frontend-deployment.yaml, frontend-service.yaml, ingress.yaml
+  - backend-deployment.yaml
+  - backend-service.yaml
+  # 다음 조각에서 추가: frontend-deployment.yaml, frontend-service.yaml, ingress.yaml
 
 # ConfigMap backend-config = config.env(Terraform 출력값) + 아래 고정값(공개).
 # 이름 뒤에 내용 해시가 붙는다(backend-config-abc123). 값이 바뀌면 이름이 바뀌고, 참조하는 Deployment 가 롤링 재시작된다.
@@ -92,4 +94,20 @@ replacements:
         fieldPaths:
           - spec.data.[secretKey=DB_USER].remoteRef.key
           - spec.data.[secretKey=DB_PASSWORD].remoteRef.key
-  # 다음 조각에서 추가: ECR_BACKEND/ECR_FRONTEND → Deployment image, APP_HOST·ACM_CERTIFICATE_ARN → Ingress
+  # 이미지 레지스트리 주소 → Deployment image.
+  # image 는 images: 를 거친 뒤 "parking-guardian/backend:ffdb75e" 다. delimiter ":" 로 나눈 0번째(태그 앞부분)만
+  # ECR_BACKEND("<계정>.dkr.ecr.<리전>.amazonaws.com/parking-guardian/backend")로 바꾸면 태그는 그대로 남는다.
+  - source:
+      kind: ConfigMap
+      name: backend-config
+      fieldPath: data.ECR_BACKEND
+    targets:
+      - select:
+          kind: Deployment
+          name: backend
+        fieldPaths:
+          - spec.template.spec.containers.[name=backend].image
+        options:
+          delimiter: ":"
+          index: 0
+  # 다음 조각에서 추가: ECR_FRONTEND → frontend image, APP_HOST·ACM_CERTIFICATE_ARN → Ingress

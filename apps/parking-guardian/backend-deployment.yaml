@@ -1,0 +1,124 @@
+# backend: Flask API + YOLO 추론(Pod 1개). 설계 4.4 표의 값을 그대로 옮겼다.
+#
+# 시작 순서: initContainer(모델 다운로드) → backend 컨테이너(flask db upgrade → flask seed → gunicorn).
+# 이미지 주소: "parking-guardian/backend:<태그>" 는 자리표시자. kustomization.yaml 의 images: 가 태그를, replacements 가
+#   레지스트리 주소(config.env 의 ECR_BACKEND)를 채운다. 그래서 이 파일에 계정 ID 가 없다.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: parking-guardian
+  labels:
+    app.kubernetes.io/name: backend
+spec:
+  replicas: 1
+
+  # 새 Pod 가 Ready 된 뒤 옛 Pod 를 내린다(maxSurge 1, maxUnavailable 0). 중단 시간 측정용(2.1절 5번).
+  # 새 backend 가 CPU 1000m 을 요청하므로 옛 Pod 가 있는 노드에는 못 뜨고 다른 노드에 뜬다. 노드가 2대인 이유 중 하나.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: backend
+    spec:
+      serviceAccountName: backend # Pod Identity 로 S3 권한(사진 Put/Get/Head, 모델 Get/List)
+      automountServiceAccountToken: false
+
+      # gunicorn --timeout 120 보다 길게. SIGTERM 뒤 진행 중인 추론 요청이 끝날 때까지 기다린다.
+      terminationGracePeriodSeconds: 130
+
+      securityContext:
+        # emptyDir 의 그룹을 앱 사용자(uid 10001, Dockerfile 의 app)로. initContainer 가 받은 모델을 앱이 읽을 수 있게.
+        fsGroup: 10001
+
+      volumes:
+        # 모델 파일 보관. Pod 마다 새로 만들어지므로 "항상 캐시 없음" 이다. 이것이 initContainer 방식의 고정 비용(2.1절 2번).
+        - name: models
+          emptyDir:
+            sizeLimit: 1Gi # 모델 412 MB + 여유
+
+      initContainers:
+        # S3 모델 버킷의 <MODEL_VERSION>/ 전체를 /models 로 받는다. S3 Gateway Endpoint 를 타므로 NAT 를 거치지 않는다.
+        # 앞뒤 date 로그 = 모델 다운로드 시간 측정(2.1절 2번). 자격 증명은 Pod Identity(backend ServiceAccount).
+        - name: fetch-models
+          image: public.ecr.aws/aws-cli/aws-cli:2.38.6
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              echo "fetch-models start $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              aws s3 sync "s3://${MODELS_BUCKET}/${MODEL_VERSION}/" /models/ --no-progress
+              echo "fetch-models end   $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              ls -l /models
+          envFrom:
+            - configMapRef:
+                name: backend-config # MODELS_BUCKET, MODEL_VERSION, AWS_REGION
+          volumeMounts:
+            - name: models
+              mountPath: /models
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+
+      containers:
+        - name: backend
+          image: parking-guardian/backend:placeholder # images: + replacements 가 채운다
+          # 태그가 불변이라 같은 태그 = 같은 이미지. 노드에 있으면 다시 받지 않는다(이미지 Pull 시간 측정의 "캐시 있음/없음" 구분).
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 5000
+
+          # 환경변수 = ConfigMap(Terraform 출력값 + 고정값) + Secret(ESO 가 만든 backend-secrets).
+          # 모델 경로(WINDOW_MODEL_PATH=/models/default.pt 등)는 Dockerfile 의 ENV 로 이미 들어 있다.
+          envFrom:
+            - configMapRef:
+                name: backend-config
+            - secretRef:
+                name: backend-secrets
+
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+
+          resources:
+            requests:
+              cpu: "1" # 추론이 CPU 를 다 쓴다. limit 은 두지 않아 남는 CPU 를 더 쓸 수 있다
+              memory: 1.5Gi
+            limits:
+              memory: 2Gi # RSS 최대 910 MB 의 2배. 넘으면 OOMKilled
+
+          # /healthz: 프로세스 생존(의존성 안 봄). /readyz: DB 에 SELECT 1.
+          # startup 이 성공하기 전엔 liveness·readiness 가 쉰다. 마이그레이션·시드·gunicorn 기동에 최대 60초(5초 × 12).
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 12
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
