@@ -53,9 +53,9 @@ configMapGenerator:
 # newTag 는 앱 리포의 커밋 짧은 해시. 앱 리포의 CI(build-push.yml 2단계)가 이 두 줄을 커밋한다.
 images:
   - name: parking-guardian/backend
-    newTag: ffdb75e
+    newTag: 8f62fcf
   - name: parking-guardian/frontend
-    newTag: ffdb75e
+    newTag: 8f62fcf
 
 # < replacements > 매니페스트의 자리표시자를 ConfigMap backend-config(config.env)의 값으로 바꾼다.
 # source: 어디서 값을 가져오나. target: 어느 리소스의 어느 필드에 넣나.
