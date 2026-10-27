@@ -23,7 +23,9 @@ resources:
   - externalsecret.yaml
   - backend-deployment.yaml
   - backend-service.yaml
-  # 다음 조각에서 추가: frontend-deployment.yaml, frontend-service.yaml, ingress.yaml
+  - frontend-deployment.yaml
+  - frontend-service.yaml
+  # 다음 조각에서 추가: ingress.yaml
 
 # ConfigMap backend-config = config.env(Terraform 출력값) + 아래 고정값(공개).
 # 이름 뒤에 내용 해시가 붙는다(backend-config-abc123). 값이 바뀌면 이름이 바뀌고, 참조하는 Deployment 가 롤링 재시작된다.
@@ -110,4 +112,17 @@ replacements:
         options:
           delimiter: ":"
           index: 0
-  # 다음 조각에서 추가: ECR_FRONTEND → frontend image, APP_HOST·ACM_CERTIFICATE_ARN → Ingress
+  - source:
+      kind: ConfigMap
+      name: backend-config
+      fieldPath: data.ECR_FRONTEND
+    targets:
+      - select:
+          kind: Deployment
+          name: frontend
+        fieldPaths:
+          - spec.template.spec.containers.[name=frontend].image
+        options:
+          delimiter: ":"
+          index: 0
+  # 다음 조각에서 추가: APP_HOST·ACM_CERTIFICATE_ARN → Ingress
