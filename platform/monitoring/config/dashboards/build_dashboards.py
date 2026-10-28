@@ -110,7 +110,9 @@ def dashboard(uid, title, panels, tags, refresh="15s", time_from="now-30m"):
 
 
 def hist_quantile(qt, metric, selector, by=""):
-    return f'histogram_quantile({qt}, sum by (le{by}) (rate({metric}_bucket{{{selector}}}[1m])))'
+    # rate 창 2분: 15초 스크레이프 × 8점. 1분이면 요청이 드문 구간마다 NaN(빈 창)이 되어 그래프가 자주 끊긴다.
+    # 부하 테스트 단계(3분)보다는 짧아 knee 는 그대로 보인다.
+    return f'histogram_quantile({qt}, sum by (le{by}) (rate({metric}_bucket{{{selector}}}[2m])))'
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +165,8 @@ def phase_comparison():
     P.append(panel("④ 5xx 비율", [
         q(f'(sum(rate(http_request_duration_seconds_count{{{NS}, status=~"5.."}}[1m])) or vector(0)) / sum(rate(http_request_duration_seconds_count{{{NS}}}[1m]))',
           "5xx / 전체", CRITICAL),
-        q(f'(sum(rate(http_request_duration_seconds_count{{{DETECT}, status="503"}}[1m])) or vector(0)) / (sum(rate(http_request_duration_seconds_count{{{DETECT}}}[1m])) or vector(1))',
+        # 분모가 0 이면(추론 요청 없음) 0/0 = NaN 이 되므로 "> 0" 으로 비운 뒤 전체를 0 으로 대체한다.
+        q(f'((sum(rate(http_request_duration_seconds_count{{{DETECT}, status="503"}}[2m])) or vector(0)) / (sum(rate(http_request_duration_seconds_count{{{DETECT}}}[2m])) > 0)) or vector(0)',
           "추론 503 / 추론 요청", ORANGE),
     ], 16, 27, 8, 7, unit="percentunit", thresholds=[0.01], desc="점선 1% = k6 통과 기준(오류율)."))
 

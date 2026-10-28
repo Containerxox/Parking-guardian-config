@@ -43,22 +43,22 @@
    },
    "targets": [
     {
-     "expr": "histogram_quantile(0.95, sum by (le) (rate(pg_inference_stage_seconds_bucket{stage=\"decode\"}[1m])))",
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(pg_inference_stage_seconds_bucket{stage=\"decode\"}[2m])))",
      "legendFormat": "디코드",
      "refId": "A"
     },
     {
-     "expr": "histogram_quantile(0.95, sum by (le) (rate(pg_inference_stage_seconds_bucket{stage=\"window\"}[1m])))",
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(pg_inference_stage_seconds_bucket{stage=\"window\"}[2m])))",
      "legendFormat": "앞유리 탐지",
      "refId": "B"
     },
     {
-     "expr": "histogram_quantile(0.95, sum by (le) (rate(pg_inference_stage_seconds_bucket{stage=\"sticker\"}[1m])))",
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(pg_inference_stage_seconds_bucket{stage=\"sticker\"}[2m])))",
      "legendFormat": "스티커 탐지",
      "refId": "C"
     },
     {
-     "expr": "histogram_quantile(0.95, sum by (le) (rate(pg_inference_lock_wait_seconds_bucket{}[1m])))",
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(pg_inference_lock_wait_seconds_bucket{}[2m])))",
      "legendFormat": "락 대기",
      "refId": "D"
     }
@@ -177,22 +177,22 @@
    },
    "targets": [
     {
-     "expr": "histogram_quantile(0.5, sum by (le) (rate(pg_inference_stage_seconds_bucket{stage=\"decode\"}[1m])))",
+     "expr": "histogram_quantile(0.5, sum by (le) (rate(pg_inference_stage_seconds_bucket{stage=\"decode\"}[2m])))",
      "legendFormat": "디코드",
      "refId": "A"
     },
     {
-     "expr": "histogram_quantile(0.5, sum by (le) (rate(pg_inference_stage_seconds_bucket{stage=\"window\"}[1m])))",
+     "expr": "histogram_quantile(0.5, sum by (le) (rate(pg_inference_stage_seconds_bucket{stage=\"window\"}[2m])))",
      "legendFormat": "앞유리 탐지",
      "refId": "B"
     },
     {
-     "expr": "histogram_quantile(0.5, sum by (le) (rate(pg_inference_stage_seconds_bucket{stage=\"sticker\"}[1m])))",
+     "expr": "histogram_quantile(0.5, sum by (le) (rate(pg_inference_stage_seconds_bucket{stage=\"sticker\"}[2m])))",
      "legendFormat": "스티커 탐지",
      "refId": "C"
     },
     {
-     "expr": "histogram_quantile(0.5, sum by (le) (rate(pg_inference_lock_wait_seconds_bucket{}[1m])))",
+     "expr": "histogram_quantile(0.5, sum by (le) (rate(pg_inference_lock_wait_seconds_bucket{}[2m])))",
      "legendFormat": "락 대기",
      "refId": "D"
     }
