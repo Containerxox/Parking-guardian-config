@@ -56,11 +56,12 @@ configMapGenerator:
 # 이미지 태그. 매니페스트의 image 는 "parking-guardian/backend:placeholder" 처럼 레지스트리 없는 이름이고,
 # 여기서 newTag 를 붙인 뒤 replacements 가 레지스트리 주소(config.env 의 ECR_*)를 앞에 채운다.
 # newTag 는 앱 리포의 커밋 짧은 해시. 앱 리포의 CI(build-push.yml 2단계)가 이 두 줄을 커밋한다.
+# 반드시 따옴표로 감싼다: 해시가 숫자만으로 이뤄지면(예: 3993669) YAML 이 정수로 읽어 kustomize build 가 실패한다(2026-10-28 실제 발생).
 images:
   - name: parking-guardian/backend
-    newTag: 3993669
+    newTag: "3993669"
   - name: parking-guardian/frontend
-    newTag: 3993669
+    newTag: "3993669"
 
 # < replacements > 매니페스트의 자리표시자를 ConfigMap backend-config(config.env)의 값으로 바꾼다.
 # source: 어디서 값을 가져오나. target: 어느 리소스의 어느 필드에 넣나.
