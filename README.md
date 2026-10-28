@@ -7,8 +7,16 @@ Parking Guardian 의 Kubernetes 매니페스트(Kustomize). AWS 인프라는 `pa
 ## 구조
 
 ```text
-platform/                        클러스터 1벌(앱과 무관한 공용 오브젝트)
-└─ cluster-secret-store.yaml     ClusterSecretStore aws-secrets-manager (Pod Identity 인증, auth 블록 없음)
+platform/                        클러스터 1벌(앱과 무관한 공용 오브젝트. Argo 앱 platform, 하위 폴더는 포함 안 함)
+├─ cluster-secret-store.yaml     ClusterSecretStore aws-secrets-manager (Pod Identity 인증, auth 블록 없음)
+├─ storageclass-gp3.yaml         EBS CSI gp3 (Prometheus TSDB). infra cluster 스택 ebs_csi.tf 가 전제
+└─ monitoring/
+   ├─ values.yaml                kube-prometheus-stack Helm 값 (Argo 앱 monitoring 이 $values 로 읽음)
+   └─ config/                    Argo 앱 monitoring-config: ExternalSecret grafana-admin + 대시보드 ConfigMap
+      └─ dashboards/             build_dashboards.py → phase-comparison / resources / inference .json
+argocd/
+├─ root.yaml                     app-of-apps 뿌리(kubectl apply 1회)
+└─ apps/                         platform, parking-guardian, monitoring, monitoring-config
 apps/parking-guardian/           앱 1벌. Kustomize 단일 구성(overlay 없음)
 ├─ kustomization.yaml            configMapGenerator 2개, images: 태그, replacements
 ├─ config.env.example            키 16개와 출처. 실제 config.env 는 gitignore
@@ -19,6 +27,7 @@ apps/parking-guardian/           앱 1벌. Kustomize 단일 구성(overlay 없�
 ├─ backend-deployment.yaml, backend-service.yaml   (Deployment 는 sync-wave 2, replicas 없음 → HPA 가 관리)
 ├─ backend-hpa.yaml              HPA 최소 2 Pod(무중단), 최대 3(= 노드 수), CPU 70%
 ├─ backend-pdb.yaml              PodDisruptionBudget minAvailable 50%
+├─ backend-podmonitor.yaml       Prometheus 가 backend :9102/metrics 를 15초마다 긁음
 ├─ frontend-deployment.yaml, frontend-service.yaml
 └─ ingress.yaml                  ALB(internet-facing, ip 타깃, 80→443, ACM, 이름 parking-guardian)
 scripts/
@@ -107,11 +116,32 @@ kubectl -n parking-guardian get pdb backend          # ALLOWED DISRUPTIONS 1 (Po
 kubectl -n parking-guardian get pods -l app.kubernetes.io/name=backend -o wide   # 노드가 서로 달라야 한다
 ```
 
+## 모니터링 (Prometheus + Grafana)
+
+kube-prometheus-stack 을 Argo CD 앱 `monitoring`(Helm, 값은 `platform/monitoring/values.yaml`)으로 설치한다. 앱 `monitoring-config` 가 Grafana 관리자 Secret(ESO ← Secrets Manager `parking-guardian/grafana`)과 대시보드 ConfigMap 을 넣는다.
+
+| 무엇 | 어디서 오나 |
+|---|---|
+| 앱 메트릭 | backend `:9102/metrics`(앱 `app/metrics.py`, Flask 와 별도 스레드) ← `backend-podmonitor.yaml`, 15초 |
+| Kubernetes | kubelet/cAdvisor(컨테이너 CPU·메모리), kube-state-metrics(Ready·재시작·HPA), node-exporter(노드 CPU·steal) |
+| k6 결과 | Prometheus remote-write receiver 가 켜져 있다(`-o experimental-prometheus-rw`) |
+| 대시보드 | `platform/monitoring/config/dashboards/*.json`. 폴더 "Parking Guardian". JSON 은 `build_dashboards.py` 로 생성 |
+| 저장 | Prometheus TSDB EBS gp3 10Gi, 15일. 클러스터와 함께 사라진다 → 테스트 결과는 앱 리포 `docs/measurements` 에 CSV/PNG 로 |
+
+```powershell
+kubectl -n monitoring get pods,pvc                                        # prometheus-monitoring-prometheus-0 Running, PVC Bound
+kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80         # http://localhost:3000 (계정: Secrets Manager parking-guardian/grafana)
+kubectl -n monitoring port-forward svc/monitoring-prometheus 9090:9090    # http://localhost:9090/targets → podMonitor/parking-guardian/backend UP
+```
+
+전제 순서: infra cluster 스택 EBS CSI add-on → data 스택 `parking-guardian/grafana` 비밀 생성·값 주입 → platform 스택 ESO 정책에 그 ARN → 이 리포 push. Grafana Pod 는 Secret 이 생길 때까지 CreateContainerConfigError 로 기다린다(정상). PodMonitor 는 monitoring 앱의 CRD 가 먼저 있어야 하며, 없으면 parking-guardian 앱이 retry 로 기다린다.
+
 ## 삭제
 
 순서가 중요하다. **Ingress 를 먼저 지워 ALB 가 사라진 것을 확인한 뒤** infra 의 `platform` 스택을 지운다. 컨트롤러가 먼저 사라지면 ALB·타깃 그룹·SG 규칙이 고아로 남는다.
 
 ```powershell
+# Argo CD 사용 중이면 kubectl delete 대신 Application 을 지운다: root → parking-guardian(ALB 사라질 때까지) → monitoring, monitoring-config(PVC 삭제) → platform
 kubectl delete -k apps/parking-guardian/          # Ingress 포함. ALB 삭제 1~2분
 aws elbv2 describe-load-balancers --names parking-guardian   # LoadBalancerNotFound 가 나와야 다음으로
 kubectl delete -f platform/
