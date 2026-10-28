@@ -9,4 +9,21 @@ namespace: monitoring
 resources:
   - grafana-admin-externalsecret.yaml
 
-# 대시보드 ConfigMap(configMapGenerator, dashboards/*.json)은 다음 커밋에서 추가한다. 스택 설치와 대시보드 작성을 병행하기 위해서다.
+generatorOptions:
+  disableNameSuffixHash: true # 대시보드 ConfigMap 은 이름이 고정이어야 sidecar 가 같은 대시보드로 갱신한다
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: Parking Guardian
+
+# dashboards/*.json 은 build_dashboards.py 가 만든다. JSON 을 직접 고치지 말고 스크립트를 고친 뒤 다시 실행해 커밋한다.
+configMapGenerator:
+  - name: dashboard-phase-comparison
+    files:
+      - dashboards/phase-comparison.json
+  - name: dashboard-resources
+    files:
+      - dashboards/resources.json
+  - name: dashboard-inference
+    files:
+      - dashboards/inference.json

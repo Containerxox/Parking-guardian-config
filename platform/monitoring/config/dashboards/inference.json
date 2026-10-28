@@ -1,0 +1,627 @@
+{
+ "uid": "pg-inference",
+ "title": "Parking Guardian / 추론 파이프라인",
+ "tags": [
+  "parking-guardian",
+  "phase1"
+ ],
+ "timezone": "Asia/Seoul",
+ "editable": true,
+ "graphTooltip": 1,
+ "refresh": "15s",
+ "time": {
+  "from": "now-30m",
+  "to": "now"
+ },
+ "schemaVersion": 39,
+ "version": 1,
+ "panels": [
+  {
+   "type": "text",
+   "title": "",
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 24,
+    "h": 3
+   },
+   "options": {
+    "mode": "markdown",
+    "content": "**읽는 법** 사진 1장 = 디코드 → (락 대기) → 앞유리 탐지 → 스티커 탐지. 단계별 p95 가 순수 추론 비용이고, 락 대기는 큐잉 비용이다. Phase 2 에서는 이 패널들이 추론 서비스 쪽으로 옮겨 가고, backend 에는 HTTP 호출 시간만 남는다."
+   },
+   "id": 1
+  },
+  {
+   "type": "timeseries",
+   "title": "단계별 처리 시간 p95",
+   "description": "",
+   "gridPos": {
+    "x": 0,
+    "y": 3,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(pg_inference_stage_seconds_bucket{stage=\"decode\"}[1m])))",
+     "legendFormat": "디코드",
+     "refId": "A"
+    },
+    {
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(pg_inference_stage_seconds_bucket{stage=\"window\"}[1m])))",
+     "legendFormat": "앞유리 탐지",
+     "refId": "B"
+    },
+    {
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(pg_inference_stage_seconds_bucket{stage=\"sticker\"}[1m])))",
+     "legendFormat": "스티커 탐지",
+     "refId": "C"
+    },
+    {
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(pg_inference_lock_wait_seconds_bucket{}[1m])))",
+     "legendFormat": "락 대기",
+     "refId": "D"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "디코드"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#1baf7a"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "앞유리 탐지"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#2a78d6"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "스티커 탐지"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#eb6834"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "락 대기"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#a8431c"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 2
+  },
+  {
+   "type": "timeseries",
+   "title": "단계별 처리 시간 p50",
+   "description": "",
+   "gridPos": {
+    "x": 12,
+    "y": 3,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "histogram_quantile(0.5, sum by (le) (rate(pg_inference_stage_seconds_bucket{stage=\"decode\"}[1m])))",
+     "legendFormat": "디코드",
+     "refId": "A"
+    },
+    {
+     "expr": "histogram_quantile(0.5, sum by (le) (rate(pg_inference_stage_seconds_bucket{stage=\"window\"}[1m])))",
+     "legendFormat": "앞유리 탐지",
+     "refId": "B"
+    },
+    {
+     "expr": "histogram_quantile(0.5, sum by (le) (rate(pg_inference_stage_seconds_bucket{stage=\"sticker\"}[1m])))",
+     "legendFormat": "스티커 탐지",
+     "refId": "C"
+    },
+    {
+     "expr": "histogram_quantile(0.5, sum by (le) (rate(pg_inference_lock_wait_seconds_bucket{}[1m])))",
+     "legendFormat": "락 대기",
+     "refId": "D"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "디코드"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#1baf7a"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "앞유리 탐지"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#2a78d6"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "스티커 탐지"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#eb6834"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "락 대기"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#a8431c"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 3
+  },
+  {
+   "type": "timeseries",
+   "title": "판정 분포 (req/s, 누적)",
+   "description": "부하 테스트는 sample_a(permitted)·sample_b(violation)를 섞어 보낸다.",
+   "gridPos": {
+    "x": 0,
+    "y": 11,
+    "w": 12,
+    "h": 7
+   },
+   "targets": [
+    {
+     "expr": "sum(rate(pg_inference_requests_total{outcome=\"ok\", verdict=\"violation\"}[2m]))",
+     "legendFormat": "violation",
+     "refId": "A"
+    },
+    {
+     "expr": "sum(rate(pg_inference_requests_total{outcome=\"ok\", verdict=\"permitted\"}[2m]))",
+     "legendFormat": "permitted",
+     "refId": "B"
+    },
+    {
+     "expr": "sum(rate(pg_inference_requests_total{outcome=\"ok\", verdict=\"no_vehicle\"}[2m]))",
+     "legendFormat": "no_vehicle",
+     "refId": "C"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 35,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "normal"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "violation"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#e34948"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "permitted"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#008300"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "no_vehicle"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#eda100"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 4
+  },
+  {
+   "type": "timeseries",
+   "title": "추론 실패 (req/s)",
+   "description": "",
+   "gridPos": {
+    "x": 12,
+    "y": 11,
+    "w": 12,
+    "h": 7
+   },
+   "targets": [
+    {
+     "expr": "sum(rate(pg_inference_requests_total{outcome=\"error\"}[2m]))",
+     "legendFormat": "error → 503",
+     "refId": "A"
+    },
+    {
+     "expr": "sum(rate(pg_inference_requests_total{outcome=\"invalid_image\"}[2m]))",
+     "legendFormat": "invalid_image → 400",
+     "refId": "B"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "error → 503"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#d03b3b"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "invalid_image → 400"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#eda100"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 5
+  },
+  {
+   "type": "state-timeline",
+   "title": "모델 상태 (Pod 별, 초록 = ready)",
+   "description": "새 Pod 가 뜬 뒤 ready 가 되기까지의 구간이 콜드 스타트. 빨강 = cold/loading/failed.",
+   "gridPos": {
+    "x": 0,
+    "y": 18,
+    "w": 12,
+    "h": 6
+   },
+   "targets": [
+    {
+     "expr": "max by (pod) (pg_inference_model_state{namespace=\"parking-guardian\", pg_inference_model_state=\"ready\"})",
+     "legendFormat": "{{pod}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "fillOpacity": 70,
+      "lineWidth": 0
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#d03b3b",
+        "value": null
+       },
+       {
+        "color": "#0ca30c",
+        "value": 1
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "mergeValues": true,
+    "showValue": "never",
+    "rowHeight": 0.8,
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    }
+   },
+   "id": 6
+  },
+  {
+   "type": "stat",
+   "title": "모델 로딩 시간 (마지막 성공, Pod 별)",
+   "description": "PC 측정은 25~35s, EKS 노드는 약 5s(2026-10-28).",
+   "gridPos": {
+    "x": 12,
+    "y": 18,
+    "w": 12,
+    "h": 6
+   },
+   "targets": [
+    {
+     "expr": "max by (pod) (pg_model_load_seconds{namespace=\"parking-guardian\"})",
+     "legendFormat": "{{pod}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "graphMode": "area",
+    "colorMode": "none",
+    "textMode": "value",
+    "justifyMode": "center"
+   },
+   "id": 7
+  }
+ ],
+ "templating": {
+  "list": []
+ },
+ "annotations": {
+  "list": []
+ }
+}
