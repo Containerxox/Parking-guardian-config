@@ -81,8 +81,9 @@ grafana:
       provider:
         foldersFromFilesStructure: true
   resources:
-    requests: { memory: 128Mi }
-    limits: { memory: 256Mi }
+    # Grafana 13 은 유휴 약 240Mi, 대시보드를 열면 더 쓴다. 256Mi 상한에서 접속할 때마다 OOMKilled 돼 port-forward 가 끊겼다(2026-10-28).
+    requests: { memory: 256Mi }
+    limits: { memory: 512Mi }
   grafana.ini:
     analytics:
       check_for_updates: false
