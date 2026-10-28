@@ -14,6 +14,9 @@ defaultRules:
 prometheusOperator:
   admissionWebhooks:
     enabled: false # PrometheusRule 문법 검증 웹훅(+ TLS 인증서 Job 2개). 규칙을 안 쓰므로 뺀다. Argo CD hook Job 도 줄어든다
+  tls:
+    enabled: false # 웹훅을 끄면 이것도 꺼야 한다. 켜져 있으면 operator 가 웹훅 Job 이 만들던 Secret monitoring-admission 을 마운트하려다
+                   # "secret not found" 로 영원히 ContainerCreating 에 머문다(2026-10-28 실제 발생)
   resources:
     requests: { memory: 128Mi }
     limits: { memory: 256Mi }
