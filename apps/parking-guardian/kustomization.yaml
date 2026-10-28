@@ -59,9 +59,9 @@ configMapGenerator:
 # 반드시 따옴표로 감싼다: 해시가 숫자만으로 이뤄지면(예: 3993669) YAML 이 정수로 읽어 kustomize build 가 실패한다(2026-10-28 실제 발생).
 images:
   - name: parking-guardian/backend
-    newTag: "3993669"
+    newTag: "3172ae2"
   - name: parking-guardian/frontend
-    newTag: "3993669"
+    newTag: "3172ae2"
 
 # < replacements > 매니페스트의 자리표시자를 ConfigMap backend-config(config.env)의 값으로 바꾼다.
 # source: 어디서 값을 가져오나. target: 어느 리소스의 어느 필드에 넣나.
