@@ -11,9 +11,9 @@
 #
 # 왜 메모리가 아닌가: 메모리는 모델이 고정으로 약 1 GiB 를 쥐고 요청 수와 무관하다. 지표로 쓰면 항상 같은 값이다.
 #
-# maxReplicas 는 노드 수와 같다: backend 요청 CPU 1 이라 노드(2 vCPU)당 1개가 한계다. 노드 2대 → 최대 2.
-#   지금은 min = max = 2 라 HPA 가 실제로 올릴 여지가 없다. 노드 그룹을 3대로 올리면(infra cluster 스택 tfvars) maxReplicas 를 3 으로
-#   바꾸는 순간부터 HPA 가 의미를 갖는다. 노드 수보다 크게 두면 세 번째 Pod 가 영원히 Pending 으로 남으니 맞춰 둔다.
+# maxReplicas 는 노드 수와 같다: backend 요청 CPU 1 이라 노드(2 vCPU)당 1개가 한계다. 노드 3대(2026-10-28) → 최대 3.
+#   평소 2개, CPU 70% 를 넘으면 3번째 노드에 하나 더. 그 노드는 평소엔 롤링 업데이트의 surge Pod 자리로도 쓰인다.
+#   노드 수보다 크게 두면 그 Pod 는 영원히 Pending 으로 남으니 노드 수에 맞춰 둔다.
 #
 # Deployment 에서 replicas 를 지운 이유: Git 에 replicas: 1 이 남아 있으면 HPA 가 2 로 올릴 때 Argo CD selfHeal 이 1 로 되돌린다.
 #   replicas 필드가 없으면 Argo CD 는 그 필드를 비교하지 않는다(Kubernetes 문서도 HPA 대상에선 replicas 를 빼라고 권한다).
@@ -29,8 +29,8 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: backend
-  minReplicas: 2 # 무중단: 항상 노드 2대에 하나씩
-  maxReplicas: 2 # = 노드 수. 노드 3대가 되면 3
+  minReplicas: 2 # 무중단: 항상 서로 다른 노드에 하나씩
+  maxReplicas: 3 # = 노드 수(infra cluster 스택 node_desired_size)
   metrics:
     - type: Resource
       resource:

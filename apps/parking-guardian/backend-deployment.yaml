@@ -16,16 +16,16 @@ metadata:
 spec:
   # replicas 없음: HPA 가 관리한다. 여기 값을 두면 Argo CD selfHeal 이 HPA 의 결정을 되돌린다(backend-hpa.yaml 참고).
 
-  # 롤링 업데이트(무중단, 노드 2대에 Pod 2개 기준):
-  #   maxUnavailable 1 → 옛 Pod 하나를 내리는 동시에 새 Pod 하나를 올린다. 남은 옛 Pod 1개가 그동안 서비스한다(중단 없음, 용량은 절반).
-  #   maxSurge 1     → 빈 노드가 있으면 먼저 새 Pod 를 더 띄운다(노드 3대일 때). 노드 2대에서는 새 backend(CPU 1 요청)가 뜰 자리가
-  #                    없어 Pending 이 되지만, 같은 reconcile 에서 옛 Pod 하나가 내려가며 자리가 나므로 배포는 진행된다.
-  #   maxUnavailable 0 이었다면 노드 2대·Pod 2개에서는 surge Pod 자리가 없어 배포가 영원히 멈춘다.
+  # 롤링 업데이트(무중단, 노드 3대 기준):
+  #   maxSurge 1, maxUnavailable 0 → 새 Pod 하나를 빈 노드에 먼저 띄우고 Ready(모델 로딩 끝)가 된 뒤에야 옛 Pod 하나를 내린다.
+  #   배포 중에도 서비스 중인 Pod 수가 줄지 않는다(용량 저하 없음). 노드 3대로 올린 이유 중 하나.
+  #   주의: HPA 가 3개까지 늘린 상태(노드 3대 모두 backend)에서는 surge Pod 자리가 없어 롤링이 기다린다. 부하가 빠져 HPA 가
+  #   2개로 내리면(안정화 300초) 자동으로 이어진다. 중단이 아니라 지연이다. 급한 배포면 노드를 1대 더 늘리거나 HPA max 를 잠시 내린다.
   strategy:
     type: RollingUpdate
     rollingUpdate:
       maxSurge: 1
-      maxUnavailable: 1
+      maxUnavailable: 0
 
   selector:
     matchLabels:

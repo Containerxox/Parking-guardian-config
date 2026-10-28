@@ -17,8 +17,8 @@ apps/parking-guardian/           앱 1벌. Kustomize 단일 구성(overlay 없�
 ├─ externalsecret.yaml           backend-secrets ← Secrets Manager 비밀 3개(키 이름만)
 ├─ backend-migrate-job.yaml      배포 전 DB 마이그레이션 Job(sync-wave 1, 이미지 태그가 바뀌면 Replace 로 재실행)
 ├─ backend-deployment.yaml, backend-service.yaml   (Deployment 는 sync-wave 2, replicas 없음 → HPA 가 관리)
-├─ backend-hpa.yaml              HPA 최소 2 Pod(무중단), 최대 = 노드 수, CPU 70%
-├─ backend-pdb.yaml              PodDisruptionBudget minAvailable 1
+├─ backend-hpa.yaml              HPA 최소 2 Pod(무중단), 최대 3(= 노드 수), CPU 70%
+├─ backend-pdb.yaml              PodDisruptionBudget minAvailable 50%
 ├─ frontend-deployment.yaml, frontend-service.yaml
 └─ ingress.yaml                  ALB(internet-facing, ip 타깃, 80→443, ACM, 이름 parking-guardian)
 scripts/
@@ -90,10 +90,10 @@ backend 는 **항상 2개 이상**이고 서로 다른 노드(가능하면 다�
 
 | 무엇 | 설정 | 막는 것 |
 |---|---|---|
-| HPA `minReplicas 2` | `backend-hpa.yaml`. 최대는 노드 수(지금 2). CPU 70% | 평소에도 2개. 노드 3대가 되면 `maxReplicas 3` 으로 올려야 HPA 가 실제로 늘린다 |
+| HPA `minReplicas 2`, `maxReplicas 3` | `backend-hpa.yaml`. 최대 = 노드 수(infra `node_desired_size` 3). CPU 70% | 평소 2개, 부하 때 3번째 노드에 하나 더. 노드 수보다 크게 두면 Pending 만 생긴다 |
 | `podAntiAffinity`(required, hostname) + zone spread | `backend-deployment.yaml` | 두 Pod 가 한 노드·한 AZ 에 몰리는 것. 노드 하나가 죽어도 하나는 산다 |
-| PDB `minAvailable 1` | `backend-pdb.yaml` | drain·노드 그룹 업데이트가 마지막 Pod 까지 내리는 것. 한 번에 하나만, 다음은 복구된 뒤 |
-| 롤링 `maxSurge 1, maxUnavailable 1` | `backend-deployment.yaml` | 배포 중 중단. 옛 Pod 하나가 남아 서비스하는 동안 새 Pod 가 뜬다. 노드 2대·Pod 2개에서도 배포가 멈추지 않는다(용량은 잠시 절반) |
+| PDB `minAvailable 50%` | `backend-pdb.yaml`. 올림이라 2개 → 1, 3개 → 2 | drain·노드 그룹 업데이트가 절반 넘게 내리는 것. 한 번에 하나만, 다음은 복구된 뒤 |
+| 롤링 `maxSurge 1, maxUnavailable 0` | `backend-deployment.yaml` | 배포 중 용량 저하. 새 Pod 가 3번째 노드에서 Ready 가 된 뒤에야 옛 Pod 를 내린다. HPA 가 3개인 동안은 surge 자리가 없어 배포가 기다린다(지연, 중단 아님) |
 
 `backend-deployment.yaml` 에 `replicas` 가 없는 이유: HPA 가 관리한다. 있으면 Argo CD selfHeal 이 HPA 의 결정을 되돌린다.
 
@@ -102,7 +102,7 @@ Pod 가 2개이므로 컨테이너 시작 시 마이그레이션은 서로 충�
 새 backend Pod 는 gunicorn 이 뜨자마자 모델을 읽기 시작하고(앱의 `gunicorn.conf.py`), 읽는 약 30초 동안 `/readyz` 가 503 이라 Ready 가 아니다. 롤링·HPA·PDB 모두 이 Ready 를 기준으로 움직이므로, 모델을 못 읽는 Pod 가 트래픽을 받는 일이 없다.
 
 ```powershell
-kubectl -n parking-guardian get hpa backend          # TARGETS "<사용률>%/70%", REPLICAS 2
+kubectl -n parking-guardian get hpa backend          # TARGETS "<사용률>%/70%", REPLICAS 2~3
 kubectl -n parking-guardian get pdb backend          # ALLOWED DISRUPTIONS 1 (Pod 2개 모두 Ready 일 때)
 kubectl -n parking-guardian get pods -l app.kubernetes.io/name=backend -o wide   # 노드가 서로 달라야 한다
 ```
