@@ -43,12 +43,12 @@
    },
    "targets": [
     {
-     "expr": "sum(rate(http_request_duration_seconds_count{endpoint!~\"/api/v1/device/detections|.*/healthz|.*/readyz|unmatched\"}[1m]))",
+     "expr": "sum(rate(http_request_duration_seconds_count{route!~\"/api/v1/device/detections|.*/healthz|.*/readyz|unmatched\"}[1m])) or vector(0)",
      "legendFormat": "일반 API",
      "refId": "A"
     },
     {
-     "expr": "sum(rate(http_request_duration_seconds_count{endpoint=\"/api/v1/device/detections\"}[1m]))",
+     "expr": "sum(rate(http_request_duration_seconds_count{route=\"/api/v1/device/detections\"}[1m])) or vector(0)",
      "legendFormat": "추론 요청(사진 업로드)",
      "refId": "B"
     }
@@ -137,12 +137,12 @@
    },
    "targets": [
     {
-     "expr": "sum(rate(pg_inference_requests_total{outcome=\"ok\"}[1m]))",
+     "expr": "sum(rate(pg_inference_requests_total{outcome=\"ok\"}[1m])) or vector(0)",
      "legendFormat": "처리 완료",
      "refId": "A"
     },
     {
-     "expr": "sum(rate(pg_inference_requests_total{outcome!=\"ok\"}[1m]))",
+     "expr": "sum(rate(pg_inference_requests_total{outcome!=\"ok\"}[1m])) or vector(0)",
      "legendFormat": "실패",
      "refId": "B"
     }
@@ -231,17 +231,17 @@
    },
    "targets": [
     {
-     "expr": "histogram_quantile(0.5, sum by (le) (rate(http_request_duration_seconds_bucket{endpoint!~\"/api/v1/device/detections|.*/healthz|.*/readyz|unmatched\"}[1m])))",
+     "expr": "histogram_quantile(0.5, sum by (le) (rate(http_request_duration_seconds_bucket{route!~\"/api/v1/device/detections|.*/healthz|.*/readyz|unmatched\"}[1m])))",
      "legendFormat": "p50",
      "refId": "A"
     },
     {
-     "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{endpoint!~\"/api/v1/device/detections|.*/healthz|.*/readyz|unmatched\"}[1m])))",
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{route!~\"/api/v1/device/detections|.*/healthz|.*/readyz|unmatched\"}[1m])))",
      "legendFormat": "p95",
      "refId": "B"
     },
     {
-     "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{endpoint!~\"/api/v1/device/detections|.*/healthz|.*/readyz|unmatched\"}[1m])))",
+     "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{route!~\"/api/v1/device/detections|.*/healthz|.*/readyz|unmatched\"}[1m])))",
      "legendFormat": "p99",
      "refId": "C"
     }
@@ -358,17 +358,17 @@
    },
    "targets": [
     {
-     "expr": "histogram_quantile(0.5, sum by (le) (rate(http_request_duration_seconds_bucket{endpoint=\"/api/v1/device/detections\"}[1m])))",
+     "expr": "histogram_quantile(0.5, sum by (le) (rate(http_request_duration_seconds_bucket{route=\"/api/v1/device/detections\"}[1m])))",
      "legendFormat": "p50",
      "refId": "A"
     },
     {
-     "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{endpoint=\"/api/v1/device/detections\"}[1m])))",
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{route=\"/api/v1/device/detections\"}[1m])))",
      "legendFormat": "p95",
      "refId": "B"
     },
     {
-     "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{endpoint=\"/api/v1/device/detections\"}[1m])))",
+     "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{route=\"/api/v1/device/detections\"}[1m])))",
      "legendFormat": "p99",
      "refId": "C"
     }
@@ -674,7 +674,7 @@
    },
    "targets": [
     {
-     "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{endpoint=~\".*/readyz\"}[1m])))",
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{route=~\".*/readyz\"}[1m])))",
      "legendFormat": "readyz p95",
      "refId": "A"
     }
@@ -856,12 +856,12 @@
    },
    "targets": [
     {
-     "expr": "sum(rate(http_request_duration_seconds_count{namespace=\"parking-guardian\", status=~\"5..\"}[1m])) / sum(rate(http_request_duration_seconds_count{namespace=\"parking-guardian\"}[1m]))",
+     "expr": "(sum(rate(http_request_duration_seconds_count{namespace=\"parking-guardian\", status=~\"5..\"}[1m])) or vector(0)) / sum(rate(http_request_duration_seconds_count{namespace=\"parking-guardian\"}[1m]))",
      "legendFormat": "5xx / 전체",
      "refId": "A"
     },
     {
-     "expr": "sum(rate(http_request_duration_seconds_count{endpoint=\"/api/v1/device/detections\", status=\"503\"}[1m])) / sum(rate(http_request_duration_seconds_count{endpoint=\"/api/v1/device/detections\"}[1m]))",
+     "expr": "(sum(rate(http_request_duration_seconds_count{route=\"/api/v1/device/detections\", status=\"503\"}[1m])) or vector(0)) / (sum(rate(http_request_duration_seconds_count{route=\"/api/v1/device/detections\"}[1m])) or vector(1))",
      "legendFormat": "추론 503 / 추론 요청",
      "refId": "B"
     }

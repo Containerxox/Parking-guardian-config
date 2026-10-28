@@ -20,9 +20,11 @@ CRITICAL, GOOD = "#d03b3b", "#0ca30c"  # 상태색. 오류·한계선 전용
 
 NS = 'namespace="parking-guardian"'
 # "일반 API" = 장비 사진 업로드와 헬스체크를 뺀 모든 라우트. 관리자 UI 가 쓰는 것들이다.
-GENERAL = 'endpoint!~"/api/v1/device/detections|.*/healthz|.*/readyz|unmatched"'
-DETECT = 'endpoint="/api/v1/device/detections"'
-READYZ = 'endpoint=~".*/readyz"'
+# 라벨 이름은 route(앱 app/metrics.py). endpoint 는 Prometheus Operator 가 포트 이름("metrics")으로 덮어쓰는 타깃 라벨이라 쓰지 않는다.
+# 요청률·비율 패널은 "or vector(0)" 로 트래픽이 없을 때 0 을 그린다("No data" 대신). 지연 분위수는 요청이 없으면 비는 것이 맞으므로 그대로 둔다.
+GENERAL = 'route!~"/api/v1/device/detections|.*/healthz|.*/readyz|unmatched"'
+DETECT = 'route="/api/v1/device/detections"'
+READYZ = 'route=~".*/readyz"'
 
 
 def q(expr, legend, color=None, **extra):
@@ -122,12 +124,12 @@ def phase_comparison():
         "Phase 1 가설: 추론 도착률이 처리율(약 1 req/s)을 넘으면 ②③④가 함께 나빠진다.", 0, 0, 24, 3))
 
     P.append(panel("① 요청률 (req/s)", [
-        q(f'sum(rate(http_request_duration_seconds_count{{{GENERAL}}}[1m]))', "일반 API", BLUE),
-        q(f'sum(rate(http_request_duration_seconds_count{{{DETECT}}}[1m]))', "추론 요청(사진 업로드)", ORANGE),
+        q(f'sum(rate(http_request_duration_seconds_count{{{GENERAL}}}[1m])) or vector(0)', "일반 API", BLUE),
+        q(f'sum(rate(http_request_duration_seconds_count{{{DETECT}}}[1m])) or vector(0)', "추론 요청(사진 업로드)", ORANGE),
     ], 0, 3, 12, 8, unit="reqps", desc="라우트 기준. 일반 API = 장비 업로드·헬스체크를 뺀 모든 라우트."))
     P.append(panel("① 추론 처리 완료율 (req/s)", [
-        q('sum(rate(pg_inference_requests_total{outcome="ok"}[1m]))', "처리 완료", ORANGE),
-        q('sum(rate(pg_inference_requests_total{outcome!="ok"}[1m]))', "실패", CRITICAL),
+        q('sum(rate(pg_inference_requests_total{outcome="ok"}[1m])) or vector(0)', "처리 완료", ORANGE),
+        q('sum(rate(pg_inference_requests_total{outcome!="ok"}[1m])) or vector(0)', "실패", CRITICAL),
     ], 12, 3, 12, 8, unit="reqps", desc="도착률(왼쪽)보다 낮게 유지되면 큐가 쌓이고 있다는 뜻."))
 
     P.append(panel("② 일반 API 응답 시간", [
@@ -159,9 +161,9 @@ def phase_comparison():
         q(f'sum(kube_deployment_status_replicas{{{NS}, deployment="backend"}})', "전체", BLUE_LIGHT),
     ], 8, 27, 8, 7, unit="short", decimals=0, desc="Ready 가 전체보다 작아지는 구간 = 트래픽을 받지 못하는 Pod 가 있다."))
     P.append(panel("④ 5xx 비율", [
-        q(f'sum(rate(http_request_duration_seconds_count{{{NS}, status=~"5.."}}[1m])) / sum(rate(http_request_duration_seconds_count{{{NS}}}[1m]))',
+        q(f'(sum(rate(http_request_duration_seconds_count{{{NS}, status=~"5.."}}[1m])) or vector(0)) / sum(rate(http_request_duration_seconds_count{{{NS}}}[1m]))',
           "5xx / 전체", CRITICAL),
-        q(f'sum(rate(http_request_duration_seconds_count{{{DETECT}, status="503"}}[1m])) / sum(rate(http_request_duration_seconds_count{{{DETECT}}}[1m]))',
+        q(f'(sum(rate(http_request_duration_seconds_count{{{DETECT}, status="503"}}[1m])) or vector(0)) / (sum(rate(http_request_duration_seconds_count{{{DETECT}}}[1m])) or vector(1))',
           "추론 503 / 추론 요청", ORANGE),
     ], 16, 27, 8, 7, unit="percentunit", thresholds=[0.01], desc="점선 1% = k6 통과 기준(오류율)."))
 
@@ -232,13 +234,13 @@ def inference():
     ], 12, 3, 12, 8, unit="s"))
 
     P.append(panel("판정 분포 (req/s, 누적)", [
-        q('sum(rate(pg_inference_requests_total{outcome="ok", verdict="violation"}[2m]))', "violation", RED_SERIES),
-        q('sum(rate(pg_inference_requests_total{outcome="ok", verdict="permitted"}[2m]))', "permitted", GREEN),
-        q('sum(rate(pg_inference_requests_total{outcome="ok", verdict="no_vehicle"}[2m]))', "no_vehicle", YELLOW),
+        q('sum(rate(pg_inference_requests_total{outcome="ok", verdict="violation"}[2m])) or vector(0)', "violation", RED_SERIES),
+        q('sum(rate(pg_inference_requests_total{outcome="ok", verdict="permitted"}[2m])) or vector(0)', "permitted", GREEN),
+        q('sum(rate(pg_inference_requests_total{outcome="ok", verdict="no_vehicle"}[2m])) or vector(0)', "no_vehicle", YELLOW),
     ], 0, 11, 12, 7, unit="reqps", stack=True, desc="부하 테스트는 sample_a(permitted)·sample_b(violation)를 섞어 보낸다."))
     P.append(panel("추론 실패 (req/s)", [
-        q('sum(rate(pg_inference_requests_total{outcome="error"}[2m]))', "error → 503", CRITICAL),
-        q('sum(rate(pg_inference_requests_total{outcome="invalid_image"}[2m]))', "invalid_image → 400", YELLOW),
+        q('sum(rate(pg_inference_requests_total{outcome="error"}[2m])) or vector(0)', "error → 503", CRITICAL),
+        q('sum(rate(pg_inference_requests_total{outcome="invalid_image"}[2m])) or vector(0)', "invalid_image → 400", YELLOW),
     ], 12, 11, 12, 7, unit="reqps"))
 
     P.append(panel("모델 상태 (Pod 별, 초록 = ready)", [

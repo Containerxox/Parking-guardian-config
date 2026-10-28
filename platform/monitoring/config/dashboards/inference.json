@@ -311,17 +311,17 @@
    },
    "targets": [
     {
-     "expr": "sum(rate(pg_inference_requests_total{outcome=\"ok\", verdict=\"violation\"}[2m]))",
+     "expr": "sum(rate(pg_inference_requests_total{outcome=\"ok\", verdict=\"violation\"}[2m])) or vector(0)",
      "legendFormat": "violation",
      "refId": "A"
     },
     {
-     "expr": "sum(rate(pg_inference_requests_total{outcome=\"ok\", verdict=\"permitted\"}[2m]))",
+     "expr": "sum(rate(pg_inference_requests_total{outcome=\"ok\", verdict=\"permitted\"}[2m])) or vector(0)",
      "legendFormat": "permitted",
      "refId": "B"
     },
     {
-     "expr": "sum(rate(pg_inference_requests_total{outcome=\"ok\", verdict=\"no_vehicle\"}[2m]))",
+     "expr": "sum(rate(pg_inference_requests_total{outcome=\"ok\", verdict=\"no_vehicle\"}[2m])) or vector(0)",
      "legendFormat": "no_vehicle",
      "refId": "C"
     }
@@ -425,12 +425,12 @@
    },
    "targets": [
     {
-     "expr": "sum(rate(pg_inference_requests_total{outcome=\"error\"}[2m]))",
+     "expr": "sum(rate(pg_inference_requests_total{outcome=\"error\"}[2m])) or vector(0)",
      "legendFormat": "error → 503",
      "refId": "A"
     },
     {
-     "expr": "sum(rate(pg_inference_requests_total{outcome=\"invalid_image\"}[2m]))",
+     "expr": "sum(rate(pg_inference_requests_total{outcome=\"invalid_image\"}[2m])) or vector(0)",
      "legendFormat": "invalid_image → 400",
      "refId": "B"
     }
