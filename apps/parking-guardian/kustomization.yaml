@@ -26,6 +26,7 @@ resources:
   - backend-service.yaml
   - backend-hpa.yaml         # Pod 1~2, CPU 70%
   - backend-pdb.yaml
+  - backend-podmonitor.yaml  # Prometheus 스크레이프(CRD 는 monitoring 앱이 설치)
   - frontend-deployment.yaml
   - frontend-service.yaml
   - ingress.yaml

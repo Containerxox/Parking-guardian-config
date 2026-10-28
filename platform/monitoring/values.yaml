@@ -1,0 +1,98 @@
+# kube-prometheus-stack(prometheus-community) Helm 값. Argo CD Application argocd/apps/monitoring.yaml 이 이 파일을 읽는다.
+# 계정 값 없음(공개 가능). 목표: Phase 1 한계 측정용 최소 구성. 외부 노출 없음(Grafana 는 kubectl port-forward).
+#
+# 리소스 원칙(Argo CD 와 같음): CPU 요청을 두지 않는다. 노드 3대(2 vCPU)에서 backend(CPU 1 요청)가 뜰 자리를 지키기 위해서다.
+#   메모리만 요청·상한을 둔다. 모니터링 Pod 는 보통 backend 가 없는 노드에 흩어진다.
+
+fullnameOverride: monitoring # 리소스 이름을 짧게: monitoring-grafana, monitoring-kube-state-metrics, prometheus-monitoring-prometheus-0 ...
+
+# --- 쓰지 않는 것 ---
+alertmanager:
+  enabled: false # 알림 수신자가 없다. 알람은 Phase 1 설계대로 CloudWatch 5개가 맡는다
+defaultRules:
+  create: false # 기본 경보 규칙 수십 개. Alertmanager 가 없으면 평가만 하고 버린다 → Prometheus 메모리만 쓴다
+prometheusOperator:
+  admissionWebhooks:
+    enabled: false # PrometheusRule 문법 검증 웹훅(+ TLS 인증서 Job 2개). 규칙을 안 쓰므로 뺀다. Argo CD hook Job 도 줄어든다
+  resources:
+    requests: { memory: 128Mi }
+    limits: { memory: 256Mi }
+
+# EKS 는 컨트롤 플레인 컴포넌트를 스크레이프할 수 없다(관리형, 노드 밖). 켜 두면 타깃이 영원히 DOWN 으로 보인다.
+kubeEtcd: { enabled: false }
+kubeScheduler: { enabled: false }
+kubeControllerManager: { enabled: false }
+kubeProxy: { enabled: false } # EKS kube-proxy 는 메트릭을 127.0.0.1 에만 연다
+# kubelet(cAdvisor: 컨테이너 CPU·메모리), coreDns, kube-state-metrics, node-exporter 는 기본값(켜짐)
+
+# --- Prometheus ---
+prometheus:
+  prometheusSpec:
+    scrapeInterval: 15s # 기본 30s. 부하 테스트 단계가 3분이라 15s 해상도가 필요하다
+    evaluationInterval: 30s
+    retention: 15d
+    retentionSize: 8GiB # 10Gi 볼륨의 80%. 먼저 닿는 쪽이 적용된다
+
+    # k6 가 -o experimental-prometheus-rw 로 결과를 직접 밀어 넣는다. 부하(k6)와 서버 반응이 한 시간축에 놓인다.
+    enableRemoteWriteReceiver: true
+
+    # 기본값 true 면 Helm 릴리스 라벨(release=monitoring)이 붙은 PodMonitor/ServiceMonitor 만 본다.
+    # false 로 두면 클러스터의 모든 PodMonitor 를 본다 → apps/parking-guardian/backend-podmonitor.yaml 에 라벨을 맞추지 않아도 된다.
+    podMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+
+    resources:
+      requests: { memory: 512Mi }
+      limits: { memory: 1536Mi }
+
+    # TSDB 를 EBS gp3 10Gi 에 둔다(platform/storageclass-gp3.yaml + infra EBS CSI). Pod 재시작에도 데이터가 남는다.
+    # 클러스터 destroy 때는 PVC 와 함께 지워진다(소모품. 결과는 CSV/PNG 로 Git 에).
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+
+# --- Grafana ---
+grafana:
+  enabled: true
+  # 관리자 계정은 Secrets Manager → ESO → Secret monitoring/grafana-admin(키 admin-user, admin-password). 차트 기본값 admin/prom-operator 를 쓰지 않는다.
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  persistence:
+    enabled: false # 대시보드는 ConfigMap(Git)에서 오고, Prometheus 가 데이터를 가진다. Grafana 자체 상태는 잃어도 된다
+  defaultDashboardsEnabled: true # 차트가 주는 Kubernetes 대시보드(노드·Pod 리소스 등). 우리 대시보드는 ConfigMap 으로 추가
+  defaultDashboardsTimezone: Asia/Seoul
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard # 이 라벨("1")이 붙은 ConfigMap 의 JSON 을 대시보드로 불러온다
+      searchNamespace: ALL
+      folderAnnotation: grafana_folder # ConfigMap 어노테이션으로 폴더를 정한다
+      provider:
+        foldersFromFilesStructure: true
+  resources:
+    requests: { memory: 128Mi }
+    limits: { memory: 256Mi }
+  grafana.ini:
+    analytics:
+      check_for_updates: false
+      reporting_enabled: false
+    users:
+      default_theme: light
+
+# --- exporters ---
+kube-state-metrics:
+  resources:
+    requests: { memory: 64Mi }
+    limits: { memory: 128Mi }
+prometheus-node-exporter:
+  resources:
+    requests: { memory: 32Mi }
+    limits: { memory: 64Mi }

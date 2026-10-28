@@ -1,0 +1,12 @@
+# 모니터링 설정 1벌(Argo CD 앱 monitoring-config). ExternalSecret 과 대시보드 ConfigMap.
+# 대시보드: dashboards/*.json 을 configMapGenerator 가 ConfigMap 으로 만들고, 라벨 grafana_dashboard=1 을 보고 Grafana sidecar 가 불러온다.
+#   JSON 을 고치면 ConfigMap 해시가 바뀌고 sidecar 가 새 파일을 읽는다(Grafana 재시작 없음). 어노테이션 grafana_folder 가 폴더 이름.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: monitoring
+
+resources:
+  - grafana-admin-externalsecret.yaml
+
+# 대시보드 ConfigMap(configMapGenerator, dashboards/*.json)은 다음 커밋에서 추가한다. 스택 설치와 대시보드 작성을 병행하기 위해서다.

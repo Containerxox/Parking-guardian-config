@@ -1,0 +1,25 @@
+# 모니터링 설정(platform/monitoring/config/): Grafana 관리자 Secret(ExternalSecret)과 대시보드 ConfigMap.
+# 차트(monitoring 앱)와 분리한 이유: 대시보드 JSON 을 고칠 때 Helm 릴리스를 건드리지 않고, Secret 은 ESO 가 따로 관리한다.
+# monitoring 앱이 Namespace 를 만들지만 순서를 보장하지 않으므로 여기도 CreateNamespace 를 켠다(둘 중 먼저 온 쪽이 만든다).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: monitoring-config
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Containerxox/Parking-guardian-config.git
+    targetRevision: main
+    path: platform/monitoring/config
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

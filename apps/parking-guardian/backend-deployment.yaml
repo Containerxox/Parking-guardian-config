@@ -106,6 +106,8 @@ spec:
           ports:
             - name: http
               containerPort: 5000
+            - name: metrics
+              containerPort: 9102 # Prometheus /metrics (앱 METRICS_PORT 기본값). backend-podmonitor.yaml 이 이 이름으로 긁는다. Service 에는 넣지 않는다
 
           # 환경변수 = ConfigMap(Terraform 출력값 + 고정값) + Secret(ESO 가 만든 backend-secrets).
           # 모델 경로(WINDOW_MODEL_PATH=/models/default.pt 등)는 Dockerfile 의 ENV 로 이미 들어 있다.

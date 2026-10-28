@@ -1,0 +1,26 @@
+# backend PodMonitor: Prometheus Operator 에게 "backend Pod 의 metrics 포트(9102)를 15초마다 긁어라" 고 알린다.
+#
+# 왜 ServiceMonitor 가 아닌가: backend Service 는 5000 번(API)만 낸다. 메트릭 포트는 Service 에 넣지 않고(ALB 타깃 그룹과 섞이지 않게)
+#   Pod 의 containerPort 이름 metrics 로 직접 긁는다. HPA 로 Pod 가 늘어나면 Operator 가 타깃을 알아서 추가한다.
+# 9102 를 따로 쓰는 이유: 앱의 /metrics 는 Flask(4 스레드)가 아니라 별도 스레드가 낸다. 스레드 4개가 추론 락에 묶인 순간에도 스크레이프가 된다.
+#
+# CRD(PodMonitor)는 모니터링 앱(kube-prometheus-stack)이 설치한다. 그 전에 이 파일이 적용되면 "kind 없음" 으로 실패하므로
+#   SkipDryRunOnMissingResource 로 dry-run 을 건너뛰고, Application(argocd/apps/parking-guardian.yaml)의 retry 가 CRD 가 생길 때까지 재시도한다.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: backend
+  namespace: parking-guardian
+  labels:
+    app.kubernetes.io/name: backend
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  podMetricsEndpoints:
+    - port: metrics # backend-deployment.yaml 의 containerPort 이름
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s

@@ -1,0 +1,18 @@
+# StorageClass gp3: PersistentVolumeClaim 이 EBS gp3 볼륨으로 만들어지게 한다. 첫 사용자는 모니터링의 Prometheus TSDB.
+#
+# 전제: infra cluster 스택의 EBS CSI 드라이버 Add-on(ebs_csi.tf). 기본으로 있는 StorageClass gp2 는 provisioner 가
+#   kubernetes.io/aws-ebs(in-tree)인데 Kubernetes 1.27 에서 제거되어 PVC 가 영원히 Pending 이다. 그래서 CSI 용을 따로 만든다.
+# 기본 StorageClass 로 지정하지 않는다(gp2 가 기본 어노테이션을 갖고 있다). 쓰는 쪽이 storageClassName: gp3 라고 명시한다.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  encrypted: "true" # AWS 관리형 키(aws/ebs). 노드 루트 볼륨과 같은 설정. 비용 없음
+# Pod 가 어느 노드(AZ)에 뜰지 정해진 뒤 그 AZ 에 볼륨을 만든다. 먼저 만들면 다른 AZ 노드에 Pod 가 배치될 때 붙일 수 없다.
+volumeBindingMode: WaitForFirstConsumer
+# PVC 를 지우면 볼륨도 지운다. 모니터링 데이터는 테스트마다 CSV/PNG 로 내보내 Git 에 남기므로(앱 리포 docs/measurements) 볼륨은 소모품이다.
+reclaimPolicy: Delete
+allowVolumeExpansion: true

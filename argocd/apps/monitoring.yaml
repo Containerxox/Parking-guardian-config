@@ -1,0 +1,48 @@
+# 모니터링: kube-prometheus-stack(Prometheus Operator + Prometheus + Grafana + kube-state-metrics + node-exporter) Helm 차트.
+#
+# 소스가 둘이다(multi-source): 차트는 prometheus-community Helm 저장소에서, 값(values.yaml)은 이 config 리포에서.
+#   ref: values 로 이름 붙인 Git 소스를 $values 로 참조한다. 차트 버전은 여기 targetRevision 한 곳에서만 올린다.
+#
+# ServerSideApply: Prometheus Operator 의 CRD 는 수백 KB 라 kubectl apply(client-side)의 last-applied 어노테이션 한도(256 KB)를
+#   넘는다. 서버 측 적용이면 그 어노테이션을 쓰지 않아 통과한다.
+# CreateNamespace: monitoring Namespace 는 이 앱이 만든다. monitoring-config 앱(ExternalSecret·대시보드)도 같은 Namespace 를 쓴다.
+#
+# 접근: Grafana 는 Ingress 없음. kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80 → http://localhost:3000
+#   계정은 Secret grafana-admin(ESO ← Secrets Manager parking-guardian/grafana).
+# 삭제: 이 Application 을 지우면 Prometheus PVC(EBS 10Gi)도 지워진다(finalizer). 데이터는 테스트마다 내보내 Git 에 둔다.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: monitoring
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://prometheus-community.github.io/helm-charts
+      chart: kube-prometheus-stack
+      targetRevision: 92.14.1 # app v0.94.2 (2026-10-28 helm search 기준)
+      helm:
+        releaseName: monitoring
+        valueFiles:
+          - $values/platform/monitoring/values.yaml
+    - repoURL: https://github.com/Containerxox/Parking-guardian-config.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5 # CRD 가 막 생긴 직후의 일시적 실패(PodMonitor 등)를 넘긴다
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
