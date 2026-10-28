@@ -21,8 +21,11 @@ resources:
   - namespace.yaml
   - serviceaccount-backend.yaml
   - externalsecret.yaml
-  - backend-deployment.yaml
+  - backend-migrate-job.yaml # sync-wave 1: 배포 전 DB 마이그레이션
+  - backend-deployment.yaml  # sync-wave 2
   - backend-service.yaml
+  - backend-hpa.yaml         # Pod 1~2, CPU 70%
+  - backend-pdb.yaml
   - frontend-deployment.yaml
   - frontend-service.yaml
   - ingress.yaml
@@ -38,7 +41,8 @@ configMapGenerator:
       - INFERENCE_BACKEND=yolo
       - COOKIE_SECURE=true        # HTTPS 만(ALB 가 종단). 쿠키가 평문으로 나가지 않는다
       - DB_SSLMODE=require        # RDS 파라미터 그룹 rds.force_ssl=1 과 짝
-      - SEED_DEMO_DATA=1          # 시작 때 flask seed (없는 것만 만든다)
+      - SEED_DEMO_DATA=1          # backend-migrate Job 이 flask seed (없는 것만 만든다)
+      - MIGRATE_ON_START=0        # backend 컨테이너는 마이그레이션을 건너뛴다. HPA 로 Pod 가 2개여도 동시에 upgrade 하지 않도록
       - MAX_UPLOAD_MB=15
       - EMAIL_BACKEND=console     # SES 는 뒤 Phase
 
@@ -109,6 +113,15 @@ replacements:
           name: backend
         fieldPaths:
           - spec.template.spec.containers.[name=backend].image
+        options:
+          delimiter: ":"
+          index: 0
+      # 마이그레이션 Job 도 같은 backend 이미지. images: 의 태그가 먼저 붙고 여기서 레지스트리를 채운다
+      - select:
+          kind: Job
+          name: backend-migrate
+        fieldPaths:
+          - spec.template.spec.containers.[name=migrate].image
         options:
           delimiter: ":"
           index: 0

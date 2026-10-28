@@ -1,0 +1,18 @@
+# backend PodDisruptionBudget: 노드 교체·drain 같은 "자발적 중단" 때 한 번에 1개만 내리게 한다.
+#
+# maxUnavailable 1 (minAvailable 1 이 아님): Pod 가 1개일 때 minAvailable 1 이면 어떤 Pod 도 내릴 수 없어 노드 그룹 업데이트가
+#   영원히 기다린다. maxUnavailable 1 은 Pod 가 1개면 그 1개를(짧은 중단 감수), 2개면 한 번에 하나만 내린다.
+#   HPA 로 2개가 된 상태에서 노드 하나를 교체해도 API 가 끊기지 않는 것이 목적이다.
+# PDB 는 자발적 중단(drain, eviction)에만 적용된다. 노드가 갑자기 죽는 것(비자발적)은 막지 못한다.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: backend
+  namespace: parking-guardian
+  labels:
+    app.kubernetes.io/name: backend
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backend

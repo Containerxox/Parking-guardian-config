@@ -15,7 +15,10 @@ apps/parking-guardian/           앱 1벌. Kustomize 단일 구성(overlay 없�
 ├─ nginx.conf                    frontend nginx 설정(ConfigMap frontend-nginx 의 원본)
 ├─ namespace.yaml, serviceaccount-backend.yaml
 ├─ externalsecret.yaml           backend-secrets ← Secrets Manager 비밀 3개(키 이름만)
-├─ backend-deployment.yaml, backend-service.yaml
+├─ backend-migrate-job.yaml      배포 전 DB 마이그레이션 Job(sync-wave 1, 이미지 태그가 바뀌면 Replace 로 재실행)
+├─ backend-deployment.yaml, backend-service.yaml   (Deployment 는 sync-wave 2, replicas 없음 → HPA 가 관리)
+├─ backend-hpa.yaml              HPA 1~2 Pod, CPU 70%
+├─ backend-pdb.yaml              PodDisruptionBudget maxUnavailable 1
 ├─ frontend-deployment.yaml, frontend-service.yaml
 └─ ingress.yaml                  ALB(internet-facing, ip 타깃, 80→443, ACM, 이름 parking-guardian)
 scripts/
@@ -80,6 +83,19 @@ ALB 가 `active` 가 되면 infra 리포의 `dns-record` 스택을 apply 해 `pa
 | nginx 설정 | `nginx.conf` 수정 → `kubectl apply -k` (frontend 재시작) |
 | 비밀 값 | Secrets Manager 에서 `put-secret-value` → ESO 가 최대 1시간 안에 Secret 갱신. 즉시 반영은 `kubectl -n parking-guardian annotate externalsecret backend-secrets force-sync=$(date +%s) --overwrite` 뒤 backend 재시작 |
 | Terraform 출력값 | infra apply → `export-config-env.py` 재실행 → `kubectl apply -k` |
+
+## 확장(HPA)과 마이그레이션
+
+backend Pod 수는 HPA 가 CPU 사용률(요청 1코어 대비 70%)로 1~2 사이에서 정한다. 그래서 `backend-deployment.yaml` 에 `replicas` 가 없다(있으면 Argo CD selfHeal 이 HPA 의 결정을 되돌린다). 상한 2 는 노드 2대 기준이며, Pod 가 2개인 동안은 롤링 업데이트의 surge Pod 자리가 없어 배포가 기다린다(노드 3대로 올리거나 부하가 빠진 뒤 배포).
+
+Pod 가 2개가 되면 컨테이너 시작 시 마이그레이션은 서로 충돌하므로 backend 는 `MIGRATE_ON_START=0` 으로 건너뛰고, `backend-migrate` Job 이 배포마다 한 번 `flask db upgrade`(와 `flask seed`)를 한다. 순서는 Argo CD sync-wave 로 보장한다: ConfigMap·Secret(0) → Job(1, Complete 까지 대기) → Deployment(2). Job 이 실패하면 sync 가 실패하고 Deployment 는 바뀌지 않는다. 로그는 `kubectl -n parking-guardian logs job/backend-migrate`.
+
+새 backend Pod 는 gunicorn 이 뜨자마자 모델을 읽기 시작하고(앱의 `gunicorn.conf.py`), 읽는 약 30초 동안 `/readyz` 가 503 이라 Ready 가 아니다. HPA 가 띄운 Pod 가 "Ready 인데 첫 사진에 30초" 가 되는 일을 막기 위한 것이다.
+
+```powershell
+kubectl -n parking-guardian get hpa backend          # TARGETS 가 "<사용률>%/70%", REPLICAS 1~2
+kubectl -n parking-guardian describe hpa backend      # 올리고 내린 이유(Events)
+```
 
 ## 삭제
 

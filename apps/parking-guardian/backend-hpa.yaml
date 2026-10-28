@@ -1,0 +1,51 @@
+# backend HPA: CPU 사용률로 Pod 수를 1~2 사이에서 조절한다.
+#
+# 왜 CPU 인가(Phase 1): 추론은 torch 스레드 1개로 코어 1개를 지속 점유한다. 사진이 계속 들어오면 CPU 사용률이
+#   요청값(1코어)의 100% 에 가까워지므로 70% 는 "추론으로 포화되기 시작한 상태" 에 거의 대응한다.
+#   한계: 일반 API(로그인·목록 조회)만 늘어나면 CPU 가 거의 안 움직여 HPA 가 반응하지 않는다. 그리고 추론이 늘면
+#   모델 1.5 GiB 를 포함한 Pod 전체가 늘어난다. 이 두 가지가 측정으로 보일 "Phase 1 의 확장 단위 문제" 다(가설 3).
+#   모니터링 뒤에는 KEDA 의 Prometheus 스케일러로 추론 대기 수(pg_inference_in_flight) 기준으로 바꿀 예정.
+#
+# 왜 메모리가 아닌가: 메모리는 모델이 고정으로 약 1 GiB 를 쥐고 요청 수와 무관하다. 지표로 쓰면 항상 같은 값이다.
+#
+# maxReplicas 2 인 이유: 노드 2대(m7i-flex.large, 2 vCPU). backend 요청 CPU 1 이라 노드당 1개가 한계다.
+#   주의: Pod 가 2개인 상태에서 롤링 업데이트(maxSurge 1)는 세 번째 자리가 없어 멈춘다. 그때는 노드 그룹 desired 를 3 으로
+#   올리거나 부하가 빠져 1개로 돌아온 뒤 배포한다(측정 때 "확장 1단위 비용" 으로 기록).
+#
+# Deployment 에서 replicas 를 지운 이유: Git 에 replicas: 1 이 남아 있으면 HPA 가 2 로 올릴 때 Argo CD selfHeal 이 1 로 되돌린다.
+#   replicas 필드가 없으면 Argo CD 는 그 필드를 비교하지 않는다(Kubernetes 문서도 HPA 대상에선 replicas 를 빼라고 권한다).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend
+  namespace: parking-guardian
+  labels:
+    app.kubernetes.io/name: backend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  minReplicas: 1
+  maxReplicas: 2
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70 # 요청(1코어) 대비. metrics-server 가 15초마다 재는 값의 평균
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0 # 올릴 땐 바로. 상한이 2 라 폭주할 수 없다
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+    scaleDown:
+      # 내릴 땐 5분 동안 계속 낮아야 한다. 새 Pod 하나가 3 GB 이미지 Pull + 모델 412 MB + 로딩 30초를 치르므로 자주 오르내리면 비싸다.
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60

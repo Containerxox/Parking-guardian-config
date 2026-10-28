@@ -1,6 +1,7 @@
-# backend: Flask API + YOLO 추론(Pod 1개). 설계 4.4 표의 값을 그대로 옮겼다.
+# backend: Flask API + YOLO 추론. Pod 수는 HPA(backend-hpa.yaml)가 1~2 사이에서 정한다. 설계 4.4 표의 값을 그대로 옮겼다.
 #
-# 시작 순서: initContainer(모델 다운로드) → backend 컨테이너(flask db upgrade → flask seed → gunicorn).
+# 시작 순서: initContainer(모델 다운로드) → backend 컨테이너(gunicorn 기동 → 워커 훅이 모델 로딩 시작 → 로딩 끝나면 /readyz 200).
+#   DB 마이그레이션은 여기서 하지 않는다(MIGRATE_ON_START=0, ConfigMap). 배포마다 backend-migrate Job 이 먼저 한다(sync-wave 1 → 2).
 # 이미지 주소: "parking-guardian/backend:<태그>" 는 자리표시자. kustomization.yaml 의 images: 가 태그를, replacements 가
 #   레지스트리 주소(config.env 의 ECR_BACKEND)를 채운다. 그래서 이 파일에 계정 ID 가 없다.
 apiVersion: apps/v1
@@ -10,8 +11,10 @@ metadata:
   namespace: parking-guardian
   labels:
     app.kubernetes.io/name: backend
+  annotations:
+    argocd.argoproj.io/sync-wave: "2" # backend-migrate Job(wave 1)이 Complete 된 뒤에 적용
 spec:
-  replicas: 1
+  # replicas 없음: HPA 가 관리한다. 여기 값을 두면 Argo CD selfHeal 이 HPA 의 결정을 되돌린다(backend-hpa.yaml 참고).
 
   # 새 Pod 가 Ready 된 뒤 옛 Pod 를 내린다(maxSurge 1, maxUnavailable 0). 중단 시간 측정용(2.1절 5번).
   # 새 backend 가 CPU 1000m 을 요청하므로 옛 Pod 가 있는 노드에는 못 뜨고 다른 노드에 뜬다. 노드가 2대인 이유 중 하나.
@@ -102,8 +105,9 @@ spec:
             limits:
               memory: 2Gi # RSS 최대 910 MB 의 2배. 넘으면 OOMKilled
 
-          # /healthz: 프로세스 생존(의존성 안 봄). /readyz: DB 에 SELECT 1.
-          # startup 이 성공하기 전엔 liveness·readiness 가 쉰다. 마이그레이션·시드·gunicorn 기동에 최대 60초(5초 × 12).
+          # /healthz: 프로세스 생존(의존성 안 봄). /readyz: DB 에 SELECT 1 + 모델 상태(loading 이면 503).
+          # startup 이 성공하기 전엔 liveness·readiness 가 쉰다. gunicorn 기동만 보므로 60초(5초 × 12)면 넉넉하다(마이그레이션은 Job 으로 뺐다).
+          # 모델 로딩(약 30초)은 readiness 가 기다린다. 그동안 ALB 타깃은 unhealthy 이고 HPA 가 새로 띄운 Pod 도 트래픽을 받지 않는다.
           startupProbe:
             httpGet:
               path: /healthz
