@@ -1,6 +1,9 @@
-# backend: Flask API + YOLO 추론. Pod 수는 HPA(backend-hpa.yaml)가 정한다(최소 2개, 노드마다 1개). 설계 4.4 표의 값을 그대로 옮겼다.
+# backend (= API): Flask API. Phase 1 부터 AI 추론은 별도 Deployment(inference-deployment.yaml)이고, 이 Pod 는 HTTP 로 부른다.
+# 이미지는 Dockerfile 의 `api` 타깃(torch / YOLOv5 / OpenCV 없음). 모델 다운로드 initContainer 와 모델 볼륨은 inference 로 옮겼다.
+# Pod 수는 HPA(backend-hpa.yaml)가 정한다(최소 2개).
 #
-# 시작 순서: initContainer(모델 다운로드) → backend 컨테이너(gunicorn 기동 → 워커 훅이 모델 로딩 시작 → 로딩 끝나면 /readyz 200).
+# 시작 순서: backend 컨테이너(gunicorn 기동 → /readyz 가 DB 만 확인하고 200). AI 서비스의 상태는 readiness 에 넣지 않는다:
+#   AI 가 죽거나 모델을 읽는 중이어도 관리자 API 는 계속 서비스하고, 사진 탐지만 503(inference_unavailable)이 된다(ADR 0018).
 #   DB 마이그레이션은 여기서 하지 않는다(MIGRATE_ON_START=0, ConfigMap). 배포마다 backend-migrate Job 이 먼저 한다(sync-wave 1 → 2).
 # 이미지 주소: "parking-guardian/backend:<태그>" 는 자리표시자. kustomization.yaml 의 images: 가 태그를, replacements 가
 #   레지스트리 주소(config.env 의 ECR_BACKEND)를 채운다. 그래서 이 파일에 계정 ID 가 없다.
@@ -16,11 +19,8 @@ metadata:
 spec:
   # replicas 없음: HPA 가 관리한다. 여기 값을 두면 Argo CD selfHeal 이 HPA 의 결정을 되돌린다(backend-hpa.yaml 참고).
 
-  # 롤링 업데이트(무중단, 노드 3대 기준):
-  #   maxSurge 1, maxUnavailable 0 → 새 Pod 하나를 빈 노드에 먼저 띄우고 Ready(모델 로딩 끝)가 된 뒤에야 옛 Pod 하나를 내린다.
-  #   배포 중에도 서비스 중인 Pod 수가 줄지 않는다(용량 저하 없음). 노드 3대로 올린 이유 중 하나.
-  #   주의: HPA 가 3개까지 늘린 상태(노드 3대 모두 backend)에서는 surge Pod 자리가 없어 롤링이 기다린다. 부하가 빠져 HPA 가
-  #   2개로 내리면(안정화 300초) 자동으로 이어진다. 중단이 아니라 지연이다. 급한 배포면 노드를 1대 더 늘리거나 HPA max 를 잠시 내린다.
+  # 롤링 업데이트(무중단): maxSurge 1, maxUnavailable 0 → 새 Pod 하나가 Ready 가 된 뒤에야 옛 Pod 하나를 내린다.
+  #   Phase 1 의 api Pod 는 요청 200m 라 surge 자리 찾기가 Prototype(1코어)보다 쉽다(설계 3.7.1).
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -36,20 +36,21 @@ spec:
       labels:
         app.kubernetes.io/name: backend
     spec:
-      serviceAccountName: backend # Pod Identity 로 S3 권한(사진 Put/Get/Head, 모델 Get/List)
+      serviceAccountName: backend # Pod Identity 로 사진 버킷 Put/Get 만 (모델 권한은 inference 로 옮겼다)
       automountServiceAccountToken: false
 
-      # 무중단의 전제: Pod 2개가 같은 노드에 있으면 노드 하나가 죽을 때 둘 다 죽는다.
-      #   podAntiAffinity(required, hostname) → backend 는 노드당 1개만. (CPU 요청 1 때문에 어차피 2 vCPU 노드에 둘이 못 들어가지만,
-      #   리소스 우연이 아니라 규칙으로 보장한다. 노드가 부족하면 Pod 는 Pending 으로 기다린다 — 같은 노드에 몰아넣지 않는다.)
-      #   topologySpreadConstraints(zone, ScheduleAnyway) → 가능하면 AZ a/c 에 하나씩. AZ 장애 때도 하나는 남는다. 못 맞추면 그냥 띄운다.
+      # 분산은 "가능하면" 이다(preferred). Prototype 은 required 였지만, 3노드에서 API 와 AI 가 공존하려면 api 끼리도 한 노드에
+      # 몰릴 수 있게 열어 두어야 Pending 이 없다(설계 3.7.1). 몰렸는지는 배포 뒤 `kubectl get pods -o wide` 로 본다(V1).
+      #   topologySpreadConstraints(zone, ScheduleAnyway) → 가능하면 AZ a/c 에 하나씩. 못 맞추면 그냥 띄운다.
       affinity:
         podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            - labelSelector:
-                matchLabels:
-                  app.kubernetes.io/name: backend
-              topologyKey: kubernetes.io/hostname
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: backend
+                topologyKey: kubernetes.io/hostname
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: topology.kubernetes.io/zone
@@ -58,44 +59,9 @@ spec:
             matchLabels:
               app.kubernetes.io/name: backend
 
-      # gunicorn --timeout 120 보다 길게. SIGTERM 뒤 진행 중인 추론 요청이 끝날 때까지 기다린다.
-      terminationGracePeriodSeconds: 130
-
-      securityContext:
-        # emptyDir 의 그룹을 앱 사용자(uid 10001, Dockerfile 의 app)로. initContainer 가 받은 모델을 앱이 읽을 수 있게.
-        fsGroup: 10001
-
-      volumes:
-        # 모델 파일 보관. Pod 마다 새로 만들어지므로 "항상 캐시 없음" 이다. 이것이 initContainer 방식의 고정 비용(2.1절 2번).
-        - name: models
-          emptyDir:
-            sizeLimit: 1Gi # 모델 412 MB + 여유
-
-      initContainers:
-        # S3 모델 버킷의 <MODEL_VERSION>/ 전체를 /models 로 받는다. S3 Gateway Endpoint 를 타므로 NAT 를 거치지 않는다.
-        # 앞뒤 date 로그 = 모델 다운로드 시간 측정(2.1절 2번). 자격 증명은 Pod Identity(backend ServiceAccount).
-        - name: fetch-models
-          image: public.ecr.aws/aws-cli/aws-cli:2.38.6
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              set -e
-              echo "fetch-models start $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-              aws s3 sync "s3://${MODELS_BUCKET}/${MODEL_VERSION}/" /models/ --no-progress
-              echo "fetch-models end   $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-              ls -l /models
-          envFrom:
-            - configMapRef:
-                name: backend-config # MODELS_BUCKET, MODEL_VERSION, AWS_REGION
-          volumeMounts:
-            - name: models
-              mountPath: /models
-          resources:
-            requests:
-              cpu: 100m
-              memory: 128Mi
-            limits:
-              memory: 256Mi
+      # gunicorn graceful_timeout 은 기본 30초다(Prototype 은 130초로 적었지만 gunicorn 이 30초 뒤 요청을 끊어 130초는 의미가 없었다).
+      # 가장 긴 정상 요청은 AI 마감(AI_CLIENT_DEADLINE 10초) + DB 라 30초면 충분하고, 여유 15초를 더해 45초.
+      terminationGracePeriodSeconds: 45
 
       containers:
         - name: backend
@@ -109,29 +75,24 @@ spec:
             - name: metrics
               containerPort: 9102 # Prometheus /metrics (앱 METRICS_PORT 기본값). backend-podmonitor.yaml 이 이 이름으로 긁는다. Service 에는 넣지 않는다
 
-          # 환경변수 = ConfigMap(Terraform 출력값 + 고정값) + Secret(ESO 가 만든 backend-secrets).
-          # 모델 경로(WINDOW_MODEL_PATH=/models/default.pt 등)는 Dockerfile 의 ENV 로 이미 들어 있다.
+          # 환경변수 = ConfigMap(Terraform 출력값 + 고정값 + AI 연결 설정) + Secret(ESO 가 만든 backend-secrets).
           envFrom:
             - configMapRef:
                 name: backend-config
             - secretRef:
                 name: backend-secrets
 
-          volumeMounts:
-            - name: models
-              mountPath: /models
-              readOnly: true
-
+          # 요청은 [추정]이다. Phase 1 API 는 torch 가 없어 가볍다(로컬 api 이미지 압축 84 MB). 실제 사용량(S0)을 본 뒤 정하고 HPA % 도 그에 맞춘다.
+          # CPU limit 은 두지 않는다. 메모리 limit 은 요청의 2배.
           resources:
             requests:
-              cpu: "1" # 추론이 CPU 를 다 쓴다. limit 은 두지 않아 남는 CPU 를 더 쓸 수 있다
-              memory: 1.5Gi
+              cpu: 200m
+              memory: 256Mi
             limits:
-              memory: 2Gi # RSS 최대 910 MB 의 2배. 넘으면 OOMKilled
+              memory: 512Mi
 
-          # /healthz: 프로세스 생존(의존성 안 봄). /readyz: DB 에 SELECT 1 + 모델 상태(loading 이면 503).
+          # /healthz: 프로세스 생존(의존성 안 봄). /readyz: DB 에 SELECT 1 (AI 상태는 보지 않는다).
           # startup 이 성공하기 전엔 liveness·readiness 가 쉰다. gunicorn 기동만 보므로 60초(5초 × 12)면 넉넉하다(마이그레이션은 Job 으로 뺐다).
-          # 모델 로딩(약 30초)은 readiness 가 기다린다. 그동안 ALB 타깃은 unhealthy 이고 HPA 가 새로 띄운 Pod 도 트래픽을 받지 않는다.
           startupProbe:
             httpGet:
               path: /healthz

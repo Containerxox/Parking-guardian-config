@@ -1,19 +1,17 @@
-# backend HPA: CPU 사용률로 Pod 수를 조절한다. 최소 2개(무중단), 최대는 노드 수에 맞춘다.
+# backend(API) HPA: CPU 사용률로 Pod 수를 조절한다. 최소 2개(무중단), 최대 3개.
 #
-# 최소 2개인 이유(무중단 운영): Pod 1개면 그 Pod 의 재시작·노드 교체·배포가 곧 API 중단이다. 2개를 서로 다른 노드에 두면
-#   (backend-deployment.yaml 의 podAntiAffinity) 하나가 죽어도 다른 하나가 서비스한다. 그래서 HPA 는 "평소 2개, 부하 때 더" 다.
+# 최대 3 은 **3노드 실험 환경의 시작 기준**이다(2026-10-30 사용자 결정). 운영 환경의 최종 확장 한도가 아니다. 노드 자원과 실제 Pod 배치를
+#   확인해(V1) 확정한다.
 #
-# 왜 CPU 인가(Phase 1): 추론은 torch 스레드 1개로 코어 1개를 지속 점유한다. 사진이 계속 들어오면 CPU 사용률이
-#   요청값(1코어)의 100% 에 가까워지므로 70% 는 "추론으로 포화되기 시작한 상태" 에 거의 대응한다.
-#   한계: 일반 API(로그인·목록 조회)만 늘어나면 CPU 가 거의 안 움직여 HPA 가 반응하지 않는다. 그리고 추론이 늘면
-#   모델 1.5 GiB 를 포함한 Pod 전체가 늘어난다. 이 두 가지가 측정으로 보일 "Phase 1 의 확장 단위 문제" 다(가설 3).
-#   모니터링 뒤에는 KEDA 의 Prometheus 스케일러로 추론 대기 수(pg_inference_in_flight) 기준으로 바꿀 예정.
+# 최소 2개인 이유(무중단 운영): Pod 1개면 그 Pod 의 재시작·노드 교체·배포가 곧 API 중단이다. 2개를 가능하면 서로 다른 노드에 두면
+#   (backend-deployment.yaml 의 preferred anti-affinity) 하나가 죽어도 다른 하나가 서비스한다.
 #
-# 왜 메모리가 아닌가: 메모리는 모델이 고정으로 약 1 GiB 를 쥐고 요청 수와 무관하다. 지표로 쓰면 항상 같은 값이다.
-#
-# maxReplicas 는 노드 수와 같다: backend 요청 CPU 1 이라 노드(2 vCPU)당 1개가 한계다. 노드 3대(2026-10-28) → 최대 3.
-#   평소 2개, CPU 70% 를 넘으면 3번째 노드에 하나 더. 그 노드는 평소엔 롤링 업데이트의 surge Pod 자리로도 쓰인다.
-#   노드 수보다 크게 두면 그 Pod 는 영원히 Pending 으로 남으니 노드 수에 맞춰 둔다.
+# 왜 CPU 인가: 시작값이다. Phase 1 의 API 는 DB 와 AI 응답을 기다리는 시간이 길어 CPU 가 낮게 나올 수 있다. 사진이 몰려 AI 를 기다리는
+#   스레드가 늘어도 CPU 는 오르지 않을 수 있으므로, 이 HPA 가 AI 포화에 반응하지 않는다는 것이 S1/S4 에서 확인할 항목이다
+#   (대기 수 기반 확장은 Phase 2 의 KEDA). 요청 200m 의 70% 는 140m 이고 이 값은 S0 의 실측 사용량으로 다시 정한다.
+# 왜 4 가 아니라 3 인가: api 4 + inference 3 은 CPU 요청상 3노드에 들어가지 않는다(api 4번째가 Pending). api 3 + inference 3 은 들어간다
+#   (노드마다 inference 1 + api 1, 여유 30m). 단 **이 최대 상태에서 롤링 업데이트를 하면 surge Pod 한 개가 들어갈 자리가 없다**:
+#   maxUnavailable 0 이라 서비스는 끊기지 않고 롤링이 부하가 빠져 HPA 가 줄어들 때까지 기다린다(중단이 아니라 지연). 계산은 scripts/check-placement.py.
 #
 # Deployment 에서 replicas 를 지운 이유: Git 에 replicas: 1 이 남아 있으면 HPA 가 2 로 올릴 때 Argo CD selfHeal 이 1 로 되돌린다.
 #   replicas 필드가 없으면 Argo CD 는 그 필드를 비교하지 않는다(Kubernetes 문서도 HPA 대상에선 replicas 를 빼라고 권한다).
@@ -29,25 +27,25 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: backend
-  minReplicas: 2 # 무중단: 항상 서로 다른 노드에 하나씩
-  maxReplicas: 3 # = 노드 수(infra cluster 스택 node_desired_size)
+  minReplicas: 2 # 무중단: 가능하면 서로 다른 노드에 하나씩
+  maxReplicas: 3 # 3노드 실험 환경의 시작 기준. 최종 한도가 아니다
   metrics:
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: 70 # 요청(1코어) 대비. metrics-server 가 15초마다 재는 값의 평균
+          averageUtilization: 70 # 요청(200m) 대비. metrics-server 가 15초마다 재는 값의 평균
   behavior:
     scaleUp:
-      stabilizationWindowSeconds: 0 # 올릴 땐 바로. 상한이 노드 수라 폭주할 수 없다
+      stabilizationWindowSeconds: 0 # 올릴 땐 바로
       policies:
         - type: Pods
           value: 1
           periodSeconds: 60
     scaleDown:
-      # 내릴 땐 5분 동안 계속 낮아야 한다. 새 Pod 하나가 3 GB 이미지 Pull + 모델 412 MB + 로딩 30초를 치르므로 자주 오르내리면 비싸다.
-      stabilizationWindowSeconds: 300
+      # API Pod 는 가볍다(이미지 압축 84 MB, 모델 없음). 시작이 빨라 Prototype(300초)보다 짧게 둔다.
+      stabilizationWindowSeconds: 120
       policies:
         - type: Pods
           value: 1

@@ -1,0 +1,42 @@
+# inference HPA: CPU 사용률로 Pod 수를 조절한다. 최소 2개(무중단), 최대 3개(설계 3.9, 노드 수와 연결하지 않는다).
+#
+# 왜 CPU 인가: 추론은 torch 스레드 수만큼 코어를 점유한다. 포화되면 사용률이 요청(1코어)의 100% 에 가까워지므로 70% 는 "포화되기 시작한 상태" 에
+#   대응한다. 한계: 스레드를 2개로 늘리면 요청 대비 200% 까지 오를 수 있어 % 의 의미가 바뀐다(E1 뒤 다시 정한다). 대기 수(pg_inference_waiting)를
+#   지표로 쓰는 KEDA 는 Phase 2 다. 이 값은 시작값이고 S4 에서 반응 시간을 측정한다.
+# 최대 3: 3번째 Pod 는 노드 3대 중 inference 가 없는 노드에 들어간다. 요청 합 계산은 설계 3.7.1 / aws-review.md (최대 inference 3 + api 4 는 CPU 요청상 맞지 않는다).
+# Deployment 에 replicas 를 적지 않은 이유는 backend-hpa.yaml 과 같다.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: inference
+  namespace: parking-guardian
+  labels:
+    app.kubernetes.io/name: inference
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: inference
+  minReplicas: 2
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70 # 요청(1코어) 대비
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+    scaleDown:
+      # 새 Pod 하나가 이미지 Pull + 모델 다운로드(412 MB) + 로딩 20~30초를 치르므로 자주 오르내리면 비싸다.
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60

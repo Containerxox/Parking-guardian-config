@@ -73,6 +73,7 @@ def main() -> None:
         # replacements 가 매니페스트에 채우는 값
         "ECR_BACKEND": data["ecr_repository_urls"]["backend"],
         "ECR_FRONTEND": data["ecr_repository_urls"]["frontend"],
+        "ECR_INFERENCE": data["ecr_repository_urls"]["inference"],  # Phase 1: data 스택에 inference 리포지토리가 있어야 한다
         "APP_HOST": data["app_fqdn"],
         "ACM_CERTIFICATE_ARN": data["acm_certificate_arn"],
         "ALB_SECURITY_GROUP_ID": network["alb_security_group_id"],

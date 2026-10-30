@@ -20,13 +20,19 @@ labels:
 resources:
   - namespace.yaml
   - serviceaccount-backend.yaml
+  - serviceaccount-inference.yaml
   - externalsecret.yaml
   - backend-migrate-job.yaml # sync-wave 1: 배포 전 DB 마이그레이션
   - backend-deployment.yaml  # sync-wave 2
   - backend-service.yaml
-  - backend-hpa.yaml         # Pod 1~2, CPU 70%
+  - backend-hpa.yaml         # Pod 2~4, CPU 70%
   - backend-pdb.yaml
   - backend-podmonitor.yaml  # Prometheus 스크레이프(CRD 는 monitoring 앱이 설치)
+  - inference-deployment.yaml # sync-wave 2. AI 추론 서비스 (Phase 1)
+  - inference-service.yaml    # ClusterIP 8000, Ingress 에 없다
+  - inference-hpa.yaml        # Pod 2~3, CPU 70%
+  - inference-pdb.yaml
+  - inference-podmonitor.yaml
   - frontend-deployment.yaml
   - frontend-service.yaml
   - ingress.yaml
@@ -39,13 +45,27 @@ configMapGenerator:
       - config.env
     literals:
       - STORAGE_BACKEND=s3        # 사진은 S3 (adapters/storage.py)
-      - INFERENCE_BACKEND=yolo
+      # Phase 1: API 는 AI 를 HTTP 로 부른다 (adapters/inference.py HttpInference). 숫자는 시작값이고 T2/T3(설계 4.2)로 정한다.
+      - INFERENCE_BACKEND=http
+      - INFERENCE_URL=http://inference:8000
+      - GUNICORN_THREADS=8            # API 스레드 (Dockerfile CMD 가 읽는다)
+      - AI_CLIENT_DEADLINE=10         # AI 호출 한 번의 전체 마감(초), 재시도 포함
+      - AI_CLIENT_MAX_CONCURRENCY=4   # 동시에 AI 를 기다릴 수 있는 호출 수. 스레드(8)보다 작아야 한다(시작 때 점검한다)
       - COOKIE_SECURE=true        # HTTPS 만(ALB 가 종단). 쿠키가 평문으로 나가지 않는다
       - DB_SSLMODE=require        # RDS 파라미터 그룹 rds.force_ssl=1 과 짝
       - SEED_DEMO_DATA=1          # backend-migrate Job 이 flask seed (없는 것만 만든다)
       - MIGRATE_ON_START=0        # backend 컨테이너는 마이그레이션을 건너뛴다. HPA 로 Pod 가 2개여도 동시에 upgrade 하지 않도록
       - MAX_UPLOAD_MB=15
       - EMAIL_BACKEND=console     # SES 는 뒤 Phase
+
+  # inference 전용 설정. backend-config 와 따로 둔다: DB 호스트·사진 버킷·비밀 이름이 AI Pod 에 들어가지 않게(설계 3.2).
+  # 모델 버킷 이름·버전·리전은 Terraform 출력값이라 inference-deployment.yaml 이 backend-config 에서 키 단위로만 가져온다.
+  - name: inference-config
+    literals:
+      - INFERENCE_BACKEND=yolo
+      - INFERENCE_MAX_WAITING=2      # 실행 1 + 대기 2 를 넘으면 503 busy (T1 으로 정한다)
+      - TORCH_NUM_THREADS=1          # 시작값, 운영값이 아니다 (E0/E1 으로 정한다)
+      - METRICS_PORT=9102
 
   # frontend nginx 설정. 파일 그대로 ConfigMap 의 키 nginx.conf 가 된다. 이것도 해시가 붙어 바뀌면 frontend 가 롤링 재시작된다.
   # (설계 6.2 는 configmap-nginx.yaml 로 적었지만, 손으로 쓴 ConfigMap 은 내용이 바뀌어도 Pod 가 재시작되지 않아 생성기로 바꿨다.)
@@ -55,13 +75,18 @@ configMapGenerator:
 
 # 이미지 태그. 매니페스트의 image 는 "parking-guardian/backend:placeholder" 처럼 레지스트리 없는 이름이고,
 # 여기서 newTag 를 붙인 뒤 replacements 가 레지스트리 주소(config.env 의 ECR_*)를 앞에 채운다.
-# newTag 는 앱 리포의 커밋 짧은 해시. 앱 리포의 CI(build-push.yml 2단계)가 이 두 줄을 커밋한다.
+# newTag 는 앱 리포의 커밋 짧은 해시. 앱 리포의 CI(build-push.yml 2단계)가 이 세 줄을 커밋한다.
+# inference 의 "unset" 은 아직 이미지가 없다는 뜻이다(ECR 리포지토리를 만들고 CI 가 처음 푸시하기 전). CI 의 정규식은 이 줄이 있어야
+# 동작하므로(없으면 일부러 실패한다) 줄은 먼저 있어야 한다. 실제 태그가 들어가기 전에 클러스터가 이 값으로 동기화되면 inference 가
+# ImagePullBackOff 가 된다 — 그래서 클러스터가 내려가 있는 동안 push 하고, 재구축은 CI 가 태그를 쓴 뒤에 한다(aws-review.md 적용 순서).
 # 반드시 따옴표로 감싼다: 해시가 숫자만으로 이뤄지면(예: 3993669) YAML 이 정수로 읽어 kustomize build 가 실패한다(2026-10-28 실제 발생).
 images:
   - name: parking-guardian/backend
     newTag: "d354c49"
   - name: parking-guardian/frontend
     newTag: "d354c49"
+  - name: parking-guardian/inference
+    newTag: "unset"
 
 # < replacements > 매니페스트의 자리표시자를 ConfigMap backend-config(config.env)의 값으로 바꾼다.
 # source: 어디서 값을 가져오나. target: 어느 리소스의 어느 필드에 넣나.
@@ -137,6 +162,19 @@ replacements:
           name: frontend
         fieldPaths:
           - spec.template.spec.containers.[name=frontend].image
+        options:
+          delimiter: ":"
+          index: 0
+  - source:
+      kind: ConfigMap
+      name: backend-config
+      fieldPath: data.ECR_INFERENCE
+    targets:
+      - select:
+          kind: Deployment
+          name: inference
+        fieldPaths:
+          - spec.template.spec.containers.[name=inference].image
         options:
           delimiter: ":"
           index: 0

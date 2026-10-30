@@ -1,0 +1,21 @@
+# inference Prometheus 스크레이프. CRD 는 monitoring 앱(kube-prometheus-stack)이 설치한다.
+# 지표(app/metrics.py): pg_inference_running / waiting / rejected_total, pg_inference_lock_wait_seconds, pg_inference_stage_seconds,
+# pg_model_load_seconds, pg_inference_model_state. API 쪽 AI 호출 지표(pg_ai_client_*)는 backend-podmonitor.yaml 이 긁는다.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: inference
+  namespace: parking-guardian
+  labels:
+    app.kubernetes.io/name: inference
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inference
+  podMetricsEndpoints:
+    - port: metrics # inference-deployment.yaml 의 containerPort 이름
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s

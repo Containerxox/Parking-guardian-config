@@ -1,0 +1,18 @@
+# inference Service: 클러스터 안에서만 쓰는 ClusterIP. backend(API)가 http://inference:8000 으로 부른다.
+# ALB 어노테이션이 없고 Ingress 에도 없다: 밖에서 AI 서비스에 직접 올 수 없다.
+# readiness(/readyz, 모델 ready)가 통과한 Pod 만 엔드포인트가 된다. 모델을 읽는 중인 Pod 에는 요청이 가지 않는다.
+apiVersion: v1
+kind: Service
+metadata:
+  name: inference
+  namespace: parking-guardian
+  labels:
+    app.kubernetes.io/name: inference
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: inference
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

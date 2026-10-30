@@ -1,16 +1,10 @@
 # backend PodDisruptionBudget: 자발적 중단(노드 drain, eviction, 노드 그룹 업데이트) 때 서비스 중인 Pod 가 항상 1개 이상 남게 한다.
 #
-# 설계(무중단 운영, HPA 최소 2개와 짝):
-#   minAvailable 50% = "Ready 인 backend 가 절반 미만이 되는 eviction 은 거부". 퍼센트는 올림이라 Pod 2개 → 1개, 3개 → 2개, 1개 → 1개.
-#   Pod 가 2개면 한 번에 하나만 내려가고, 내려간 Pod 가 다른 노드에서 다시 Ready(모델 로딩 포함 1~2분)가 된 뒤에야 다음 노드를 비울 수
-#   있다. 노드 그룹 업데이트가 이 순서로 직렬화된다. HPA 가 3개로 늘린 상태에서도 2개는 남는다(고정 숫자 1 이었다면 2개가 한꺼번에 내려갈 수 있다).
-#   예전 maxUnavailable 1 과의 차이: Pod 가 1개뿐인 비정상 상태(예: 한 노드 장애로 하나가 Pending)에서 maxUnavailable 1 은 마지막
-#   Pod 까지 내리게 허용하지만, minAvailable 1 은 거부한다. 무중단이 우선이면 마지막 1개는 지켜야 한다.
-#   대가: 그 상태에서는 drain 이 기다린다(멈춘 것이 아니라 복구를 기다리는 것). 노드 그룹 업데이트는 PDB 때문에 기다리다 실패할 수
-#   있는데, 그때는 원인(왜 Pod 가 1개인가)을 먼저 고치는 것이 맞다.
-#
-# 적용 범위: PDB 는 자발적 중단에만 적용된다. 노드가 갑자기 죽는 것은 막지 못한다 → 그건 Pod 2개를 다른 노드에 두는 podAntiAffinity 가 맡는다.
-#   Deployment 의 롤링 업데이트는 PDB 를 보지 않는다 → 배포 중 가용성은 strategy(maxUnavailable 1)가 맡는다.
+# Phase 1 설계(3.9): minAvailable 1. Prototype 은 50%(올림) 였다. 최소 2 ~ 최대 4 에서 50% 는 Pod 4개일 때 2개를 지키지만, API Pod 는
+#   가볍고 시작이 빨라(모델 없음) 한 번에 하나만 내려가도 충분하다. 고정 숫자 1 은 "마지막 하나는 지킨다" 를 가장 단순하게 말한다.
+# 대가: Pod 가 1개뿐인 비정상 상태(한 노드 장애로 하나가 Pending)에서는 drain 이 기다린다. 멈춘 것이 아니라 복구를 기다리는 것이다.
+# 적용 범위: 자발적 중단에만. 갑작스러운 노드 장애는 막지 못한다 → 분산 배치(preferred)가 맡는다.
+#   Deployment 의 롤링 업데이트는 PDB 를 보지 않는다 → 배포 중 가용성은 strategy(maxUnavailable 0)가 맡는다.
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -19,7 +13,7 @@ metadata:
   labels:
     app.kubernetes.io/name: backend
 spec:
-  minAvailable: 50%
+  minAvailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: backend

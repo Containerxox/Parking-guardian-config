@@ -1,0 +1,174 @@
+# inference: 두 YOLOv5 모델을 gunicorn 뒤에서 돌리는 AI 추론 서비스 (ADR 0018, 설계 3장). API(backend)가 http://inference:8000 으로 부른다.
+# 이미지는 Dockerfile 의 `inference` 타깃. DB·JWT·S3 사진 접근이 없고, 이 Pod 가 하는 일은 "판정" 뿐이다.
+#
+# 권한을 일부러 좁힌다 (설계 3.2, 4.6):
+#   - ServiceAccount inference → Pod Identity 역할은 모델 버킷 읽기뿐 (infra cluster 스택 iam.tf). 사진 버킷·Secrets Manager 권한 없음
+#   - Secret 을 마운트하거나 참조하지 않는다. backend-config 도 통째로 받지 않는다(DB 호스트·사진 버킷·비밀 이름이 들어 있다).
+#     모델 다운로드에 필요한 키 3개만 configMapKeyRef 로 가져오고, 나머지 설정은 전용 ConfigMap inference-config 에 있다.
+#   - ServiceAccount 토큰을 마운트하지 않는다(Kubernetes API 호출 없음). Service 는 ClusterIP 이고 Ingress 에 없다.
+#   남는 한계(네트워크로 RDS 5432 도달 가능, 노드 역할을 IMDS 로 얻을 수 있음)는 검토 문서 aws-review.md 에 있다.
+#
+# 시작 순서: initContainer(모델 다운로드) → inference 컨테이너(gunicorn 기동 → 워커 훅이 모델 로딩 시작 → 끝나면 /readyz 200).
+#   로딩이 3번 실패하면 /healthz 가 503 이 되어 컨테이너가 재시작된다(startup 한도 180초 안에 /readyz 가 200 이 안 되어도 재시작).
+# 이미지 주소: "parking-guardian/inference:<태그>" 는 자리표시자. images: 가 태그를, replacements 가 레지스트리(config.env 의 ECR_INFERENCE)를 채운다.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference
+  namespace: parking-guardian
+  labels:
+    app.kubernetes.io/name: inference
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  # replicas 없음: HPA(inference-hpa.yaml)가 관리한다.
+
+  # 롤링: 새 Pod 가 모델을 읽고 Ready 가 된 뒤에 옛 Pod 를 내린다. 노드 3대에서 inference 2개는 N1·N2 에 있고 surge 1개는 N3 에 들어간다(설계 3.7.1).
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inference
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: inference
+    spec:
+      serviceAccountName: inference # Pod Identity: 모델 버킷 읽기만
+      automountServiceAccountToken: false
+
+      # 분산은 preferred (3노드에서 API 와 공존, 설계 3.7.1). required 면 inference 수 + surge 만큼 노드가 필요해진다.
+      # 대가: 롤링·노드 교체 뒤 inference 두 개가 한 노드에 남을 수 있다 → V1/V3 로 기록하고, 몰리면 rollout restart 로 재분산.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: inference
+                topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: inference
+
+      # gunicorn_inference.conf.py 의 graceful_timeout 이 30초다. 가장 긴 정상 요청은 (실행 1 + 대기 2) × 수 초라 30초 안에 끝난다. 여유 15초.
+      terminationGracePeriodSeconds: 45
+
+      securityContext:
+        # emptyDir 의 그룹을 앱 사용자(uid 10001, Dockerfile 의 app)로. initContainer 가 받은 모델을 앱이 읽을 수 있게.
+        fsGroup: 10001
+
+      volumes:
+        # 모델 파일 보관. Pod 마다 새로 만들어지므로 "항상 캐시 없음" 이다(설계 2.1절 시작 시간 측정).
+        - name: models
+          emptyDir:
+            sizeLimit: 1Gi # 모델 412 MB + 여유
+
+      initContainers:
+        # S3 모델 버킷의 <MODEL_VERSION>/ 전체를 /models 로 받는다. S3 Gateway Endpoint 를 타므로 NAT 를 거치지 않는다.
+        # 자격 증명은 Pod Identity(inference ServiceAccount). 필요한 값 3개만 backend-config 에서 키 단위로 가져온다.
+        - name: fetch-models
+          image: public.ecr.aws/aws-cli/aws-cli:2.38.6
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              echo "fetch-models start $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              aws s3 sync "s3://${MODELS_BUCKET}/${MODEL_VERSION}/" /models/ --no-progress
+              echo "fetch-models end   $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              ls -l /models
+          env:
+            - name: MODELS_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: MODELS_BUCKET
+            - name: MODEL_VERSION
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: MODEL_VERSION
+            - name: AWS_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: AWS_REGION
+          volumeMounts:
+            - name: models
+              mountPath: /models
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+
+      containers:
+        - name: inference
+          image: parking-guardian/inference:placeholder # images: + replacements 가 채운다
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 8000
+            - name: metrics
+              containerPort: 9102 # Prometheus /metrics (METRICS_PORT). inference-podmonitor.yaml 이 이 이름으로 긁는다. Service 에는 넣지 않는다
+
+          # 전용 ConfigMap 만 (INFERENCE_MAX_WAITING, TORCH_NUM_THREADS 등). 모델 경로(/models/…)는 이미지 ENV 에 있다.
+          envFrom:
+            - configMapRef:
+                name: inference-config
+
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
+          # 요청은 [추정]이다(설계 9.2). 로컬 Linux 측정: 최대 RSS 1363 MiB(torch 스레드 1), CPU 는 스레드 수만큼(1개면 약 1코어).
+          # 이 PC 의 값이라 확정하지 않는다. EKS 의 E0/E1/S0 를 잰 뒤 조정한다(메모리 limit 2Gi 는 최대 RSS 와 가깝다).
+          # CPU limit 은 두지 않는다. 요청은 예약일 뿐이고 노드 CPU 가 남으면 더 쓴다.
+          resources:
+            requests:
+              cpu: 1000m
+              memory: 1.5Gi
+            limits:
+              memory: 2Gi
+
+          # 설계 3.5.1:
+          #  startup  /readyz 5초 × 36회(180초). 모델 로딩이 멈추거나 오래 걸려도 잡는다. 180초는 로컬 20~30초의 약 6배인 임시 여유값(EKS 에서 재조정).
+          #           startup 이 성공하기 전에는 liveness·readiness 가 쉰다.
+          #  readiness /readyz  모델이 ready 일 때만 Service 에 들어간다. busy 는 반영하지 않는다(연쇄 장애 방지).
+          #  liveness  /healthz 로딩을 3번 포기하면 503 → 컨테이너 재시작. 요청 스레드가 모두 막혀도 응답하지 못해 잡힌다.
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
