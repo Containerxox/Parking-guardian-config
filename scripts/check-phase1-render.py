@@ -188,6 +188,34 @@ def check_backend(objs: list[dict]) -> None:
     check(pick(objs, "PodDisruptionBudget", "backend")["spec"].get("minAvailable") == 1, "PDB minAvailable 1")
 
 
+def hpa_wave_problems(objs: list[dict]) -> list[str]:
+    """HPA 는 대상 Deployment 보다 늦은 sync-wave 여야 한다.
+
+    wave 표시가 없으면 0 이다. Argo CD 는 wave 0 이 Healthy 가 되기를 기다리는데, 대상 Deployment(wave 2)가 아직 없는 HPA 는
+    Degraded(FailedGetScale)라서 wave 1·2 로 넘어가지 못한다 — 첫 배포가 멈춘다 (2026-10-30 G6 에서 겪었다).
+    """
+    wave = lambda o: int(o["metadata"].get("annotations", {}).get("argocd.argoproj.io/sync-wave", "0"))
+    problems = []
+    for h in (o for o in objs if o["kind"] == "HorizontalPodAutoscaler"):
+        name, target = h["metadata"]["name"], h["spec"]["scaleTargetRef"]["name"]
+        dep = pick(objs, "Deployment", target)
+        if dep is None:
+            problems.append(f"HPA {name}: 대상 Deployment {target} 가 렌더링 결과에 없다")
+        elif wave(h) <= wave(dep):
+            problems.append(f"HPA {name}: sync-wave {wave(h)} 는 대상 Deployment {target}(wave {wave(dep)}) 보다 뒤여야 한다 — "
+                            "아니면 Argo CD 가 Degraded HPA 를 기다리며 Deployment 를 만들지 못한다")
+    return problems
+
+
+def check_sync_waves(objs: list[dict]) -> None:
+    print("\n[sync-wave] HPA 는 대상 Deployment 뒤")
+    problems = hpa_wave_problems(objs)
+    for p in problems:
+        check(False, p)
+    if not problems:
+        check(True, "모든 HPA 가 대상 Deployment 보다 늦은 wave 다")
+
+
 def check_images_and_secrets(objs: list[dict]) -> None:
     print("\n[이미지·비밀] 전체")
     images = {}
@@ -216,6 +244,7 @@ def main() -> int:
     print(f"렌더링된 오브젝트 {len(objs)}개: " + ", ".join(sorted({f"{o['kind']}" for o in objs})))
     check_inference(objs)
     check_backend(objs)
+    check_sync_waves(objs)
     check_images_and_secrets(objs)
     print(f"\n{'실패 ' + str(len(failures)) + '건' if failures else '모두 통과'}")
     return 1 if failures else 0

@@ -22,6 +22,8 @@ metadata:
   namespace: parking-guardian
   labels:
     app.kubernetes.io/name: backend
+  annotations:
+    argocd.argoproj.io/sync-wave: "3" # 대상 Deployment(wave 2)보다 뒤. wave 0 이면 대상이 없어 Degraded → Argo CD 가 wave 1·2 로 못 넘어간다
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
