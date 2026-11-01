@@ -31,7 +31,9 @@ metadata:
     alb.ingress.kubernetes.io/manage-backend-security-group-rules: "false"
 
     # --- 속성: 첫 추론 24~34초 대비 idle 120초 (gunicorn timeout 120 과 짝) ---
-    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=120
+    # + 액세스 로그(2026-11-01, ALB 502 원인 분석용): infra data 스택의 alb-logs 버킷(SSE-S3, 7일 만료, 비공개)에 prefix alb 로 쌓는다.
+    #   요청 경로·클라이언트 IP 가 들어가므로 공개하지 않는다. 분석이 끝나면 access_logs.* 세 항목을 지우고 enabled=false 로 되돌린다.
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=120,access_logs.s3.enabled=true,access_logs.s3.bucket=parking-guardian-alb-logs-133214920453,access_logs.s3.prefix=alb
 
     # ALB·타깃 그룹에 붙는 AWS 태그. Terraform 이 만든 리소스와 같은 Project 태그로 비용을 묶어 본다.
     alb.ingress.kubernetes.io/tags: Project=parking-guardian,Phase=1,ManagedBy=alb-controller
