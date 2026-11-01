@@ -82,6 +82,17 @@ spec:
             - secretRef:
                 name: backend-secrets
 
+          # Keep-Alive 가설 검증용(2026-11-01, ALB 간헐 502 분석). gunicorn 기본 keep-alive 는 2초인데 ALB idle timeout 은 120초라,
+          # ALB 가 재사용하려는 유휴 연결을 서버가 먼저 닫는 경합이 생길 수 있다(즉시 실패형 502). 서버 값을 ALB 보다 크게 둔다.
+          # 반드시 ingress.yaml 의 ALB idle_timeout(120초)보다 커야 한다. Dockerfile CMD 에 --keep-alive 가 없어 이 환경변수가 적용되고,
+          # 명령줄의 --workers/--threads/--timeout 은 그대로다(컨테이너에서 유효 설정 계산으로 확인).
+          # 일부러 backend-config(ConfigMap)에 넣지 않았다: inference 의 fetch-models 가 그 ConfigMap 을 읽어서, 내용이 바뀌면
+          # inference Pod 템플릿도 바뀌어 롤링되는데 지금 노드 CPU 여유(최대 940m)로는 inference(1000m) surge Pod 가 스케줄되지 않는다.
+          # 종료 시간: 유휴 keep-alive 연결이 graceful_timeout(30초)까지 남아 Pod 종료가 약 3초 → 최대 30초로 길어진다(preStop 10 + 30 = 40 ≤ 45초).
+          env:
+            - name: GUNICORN_CMD_ARGS
+              value: "--keep-alive 130"
+
           # 요청은 [추정]이다. Phase 1 API 는 torch 가 없어 가볍다(로컬 api 이미지 압축 84 MB). 실제 사용량(S0)을 본 뒤 정하고 HPA % 도 그에 맞춘다.
           # CPU limit 은 두지 않는다. 메모리 limit 은 요청의 2배.
           resources:
