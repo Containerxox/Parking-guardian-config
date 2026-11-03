@@ -16,16 +16,18 @@ images:
     newTag: {frontend}
   - name: parking-guardian/inference
     newTag: "{inference}"
+  - name: parking-guardian/worker
+    newTag: "{worker}"
 '''
 
 
-def kustomization(backend="abc1234", frontend="abc1234", inference="abc1234"):
-    return KUSTOMIZATION.format(backend=backend, frontend=frontend, inference=inference)
+def kustomization(backend="abc1234", frontend="abc1234", inference="abc1234", worker="abc1234"):
+    return KUSTOMIZATION.format(backend=backend, frontend=frontend, inference=inference, worker=worker)
 
 
 def test_tags_are_read_whether_quoted_or_not():
-    assert preflight.parse_tags(kustomization("d354c49", "3993669", "unset")) == {
-        "backend": "d354c49", "frontend": "3993669", "inference": "unset"}
+    assert preflight.parse_tags(kustomization("d354c49", "3993669", "unset", "abc1234")) == {
+        "backend": "d354c49", "frontend": "3993669", "inference": "unset", "worker": "abc1234"}
 
 
 def test_a_consistent_new_set_of_tags_is_ready():
@@ -37,33 +39,50 @@ def test_the_unset_placeholder_blocks_a_rebuild():
     assert any("unset" in p for p in problems)
 
 
-def test_the_three_tags_must_be_the_same_commit():
-    """The CI writes one commit hash into all three lines. Different tags mean a half-finished CI run."""
+def test_the_four_tags_must_be_the_same_commit():
+    """The CI writes one commit hash into all four lines. Different tags mean a half-finished CI run."""
     problems = preflight.tag_problems(preflight.parse_tags(kustomization(backend="abc1234", frontend="abc1234", inference="def5678")))
     assert any("같은" in p for p in problems)
+    problems = preflight.tag_problems(preflight.parse_tags(kustomization(worker="def5678")))
+    assert any("같은" in p for p in problems)
+
+
+def test_the_unset_worker_tag_blocks_a_rebuild():
+    """Phase 2: the worker image only exists once the CI builds it (ECR repository worker). Until then the tag is "unset"."""
+    problems = preflight.tag_problems(preflight.parse_tags(kustomization(worker="unset")))
+    assert any("unset" in p and "worker" in p for p in problems)
 
 
 def test_the_prototype_backend_tag_blocks_a_rebuild():
     """backend:d354c49 is the Prototype image (torch inside, no HttpInference): it must never meet INFERENCE_BACKEND=http."""
-    problems = preflight.tag_problems(preflight.parse_tags(kustomization("d354c49", "d354c49", "d354c49")))
+    problems = preflight.tag_problems(preflight.parse_tags(kustomization("d354c49", "d354c49", "d354c49", "d354c49")))
     assert any("Prototype" in p for p in problems)
 
 
 def test_a_missing_image_entry_is_reported():
     text = "images:\n  - name: parking-guardian/backend\n    newTag: \"abc1234\"\n"
-    assert any("inference" in p for p in preflight.tag_problems(preflight.parse_tags(text)))
+    problems = preflight.tag_problems(preflight.parse_tags(text))
+    assert any("inference" in p for p in problems) and any("worker" in p for p in problems)
 
 
-def test_config_env_must_name_the_inference_registry():
+def test_config_env_must_name_the_inference_and_worker_registries():
     assert preflight.env_problems("AWS_REGION=x\nECR_BACKEND=y\n") != []
-    assert preflight.env_problems("AWS_REGION=x\nECR_INFERENCE=z\n# comment\n") == []
-    assert preflight.env_problems("ECR_INFERENCE=\n") != []  # present but empty
+    assert preflight.env_problems("AWS_REGION=x\nECR_INFERENCE=z\n# comment\n") != []   # Phase 2: ECR_WORKER is required too
+    assert preflight.env_problems("AWS_REGION=x\nECR_INFERENCE=z\nECR_WORKER=w\n# comment\n") == []
+    assert preflight.env_problems("ECR_INFERENCE=\nECR_WORKER=w\n") != []  # present but empty
+    assert preflight.env_problems("ECR_INFERENCE=z\nECR_WORKER=\n") != []
 
 
 def test_an_api_sized_backend_image_passes_and_a_prototype_sized_one_does_not():
     api_bytes, prototype_bytes = 84_326_847, 661_592_038  # compressed sizes measured locally on 2026-10-30
     assert preflight.backend_size_problems(api_bytes) == []
     assert any("Prototype" in p for p in preflight.backend_size_problems(prototype_bytes))
+
+
+def test_a_worker_image_the_size_of_the_api_image_means_the_wrong_target():
+    """The worker is the `prototype` stage (torch inside, about 660 MB compressed). An api-sized image would crash on the first inference."""
+    assert preflight.worker_size_problems(661_592_038) == []
+    assert any("api" in p for p in preflight.worker_size_problems(84_326_847))
 
 
 if __name__ == "__main__":

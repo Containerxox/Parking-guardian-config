@@ -7,14 +7,14 @@
 두 단계 모두 통과해야 다음 단계로 넘어간다 (aws-review/deploy-checklist.md 의 순서):
 
   before-config-push  config 레포를 push 하기 직전.
-      - config.env 에 ECR_INFERENCE 가 있다(없으면 kustomize 가 실패한다)
+      - config.env 에 ECR_INFERENCE 와 ECR_WORKER 가 있다(없으면 kustomize 가 실패한다)
       - 저장소 그대로(가짜 값 없이) `kubectl kustomize` 가 통과한다
       - [--aws] **클러스터가 없다** — 켜져 있으면 Argo CD 가 새 구조를 옛 이미지 태그로 동기화해 backend 가 Prototype 이미지에
         INFERENCE_BACKEND=http 를 받게 된다. 그리고 ECR inference 리포지토리가 있다
 
   before-rebuild      클러스터를 다시 만들기 직전(= Argo CD 가 config 레포를 처음 읽기 직전).
-      - images: 의 태그 세 개가 "unset" 이 아니고, 같은 커밋 해시이고, Prototype 태그(d354c49)가 아니다 (CI 가 쓴 것)
-      - [--aws] 세 이미지가 ECR 에 그 태그로 있고, backend 이미지는 api 크기다(Prototype 이미지가 아니다)
+      - images: 의 태그 네 개(backend, frontend, inference, worker)가 "unset" 이 아니고, 같은 커밋 해시이고, Prototype 태그(d354c49)가 아니다 (CI 가 쓴 것)
+      - [--aws] 네 이미지가 ECR 에 그 태그로 있고, backend 이미지는 api 크기다(Prototype 이미지가 아니다), worker 이미지는 prototype 크기다(api 타깃이 아니다)
       - [--aws] RDS 상태를 알려 준다(정지면 켜야 한다)
 
 AWS_PROFILE=parking-guardian 을 설정한다. 종료 코드 1 이면 다음 단계로 가지 않는다.
@@ -34,7 +34,7 @@ APP_DIR = REPO / "apps" / "parking-guardian"
 CLUSTER_NAME = "parking-guardian"
 PROTOTYPE_TAG = "d354c49"            # Prototype 의 마지막 코드 커밋. 이 태그의 backend 이미지는 torch 가 든 Prototype 이다
 API_MAX_BYTES = 300 * 1024 * 1024    # 압축 크기: api 약 84 MB, Prototype 약 660 MB (2026-10-30 로컬 빌드). 그 사이에 선을 긋는다
-IMAGES = ("backend", "frontend", "inference")
+IMAGES = ("backend", "frontend", "inference", "worker")   # worker: Phase 2 판별 Worker (Dockerfile prototype 타깃, CI 가 같은 커밋 해시로 쓴다)
 
 
 def parse_tags(kustomization: str) -> dict[str, str]:
@@ -56,7 +56,7 @@ def tag_problems(tags: dict[str, str]) -> list[str]:
     if unset:
         problems.append(f"newTag 가 아직 \"unset\" 이다: {unset} — CI 의 태그 갱신(update-config)이 끝나지 않았다")
     elif len({tags[n] for n in IMAGES}) != 1:
-        problems.append(f"세 이미지가 같은 커밋 해시여야 한다(CI 가 한 번에 쓴다): {tags}")
+        problems.append(f"네 이미지가 같은 커밋 해시여야 한다(CI 가 한 번에 쓴다): {tags}")
     if tags["backend"] == PROTOTYPE_TAG:
         problems.append(f"backend 태그가 Prototype 이미지({PROTOTYPE_TAG})다 — HttpInference 가 없어 INFERENCE_BACKEND=http 로 뜰 수 없다")
     return problems
@@ -64,14 +64,23 @@ def tag_problems(tags: dict[str, str]) -> list[str]:
 
 def env_problems(config_env: str) -> list[str]:
     values = dict(line.split("=", 1) for line in config_env.splitlines() if "=" in line and not line.lstrip().startswith("#"))
-    if not values.get("ECR_INFERENCE", "").strip():
-        return ["config.env 에 ECR_INFERENCE 가 없거나 비어 있다 — ECR 을 만든 뒤 scripts/export-config-env.py 로 다시 만든다"]
-    return []
+    problems = []
+    for key in ("ECR_INFERENCE", "ECR_WORKER"):
+        if not values.get(key, "").strip():
+            problems.append(f"config.env 에 {key} 가 없거나 비어 있다 — ECR 을 만든 뒤 scripts/export-config-env.py 로 다시 만든다")
+    return problems
 
 
 def backend_size_problems(size_bytes: int) -> list[str]:
     if size_bytes > API_MAX_BYTES:
         return [f"ECR 의 backend 이미지가 {size_bytes / 1024 / 1024:.0f} MB 다 — api 타깃(약 84 MB)이 아니라 Prototype 이미지(약 660 MB)로 보인다. CI 의 target 설정을 확인한다"]
+    return []
+
+
+def worker_size_problems(size_bytes: int) -> list[str]:
+    """worker 는 prototype 타깃(torch 포함, 압축 약 660 MB)이다. api 크기(약 84 MB)면 CI 의 target 이 잘못된 것이라 첫 추론에서 죽는다."""
+    if size_bytes <= API_MAX_BYTES:
+        return [f"ECR 의 worker 이미지가 {size_bytes / 1024 / 1024:.0f} MB 다 — prototype 타깃(약 660 MB)이 아니라 api 타깃(약 84 MB)으로 보인다. CI 의 worker target 설정을 확인한다"]
     return []
 
 
@@ -102,7 +111,7 @@ def cluster_exists() -> bool | None:
 
 def stage_before_config_push(use_aws: bool) -> None:
     print("[before-config-push]")
-    report(env_problems((APP_DIR / "config.env").read_text(encoding="utf-8")), "config.env 에 ECR_INFERENCE 가 있다")
+    report(env_problems((APP_DIR / "config.env").read_text(encoding="utf-8")), "config.env 에 ECR_INFERENCE, ECR_WORKER 가 있다")
     done = subprocess.run(["kubectl", "kustomize", str(APP_DIR)], capture_output=True, text=True, encoding="utf-8")
     report([] if done.returncode == 0 else [f"kubectl kustomize 실패: {done.stderr.strip()[:200]}"], "저장소 그대로 kubectl kustomize 가 통과한다")
     if not use_aws:
@@ -114,14 +123,15 @@ def stage_before_config_push(use_aws: bool) -> None:
     else:
         report(["클러스터 %s 가 켜져 있다 — 지금 push 하면 Argo CD 가 새 구조를 옛 이미지 태그로 동기화한다. 먼저 내린다" % CLUSTER_NAME] if exists else [],
                f"클러스터 {CLUSTER_NAME} 가 없다 (push 가 어떤 것도 동기화하지 않는다)")
-    repo = aws("ecr", "describe-repositories", "--repository-names", "parking-guardian/inference")
-    report([] if repo.returncode == 0 else ["ECR parking-guardian/inference 가 없다 — data 스택 apply 가 먼저다"], "ECR parking-guardian/inference 가 있다")
+    for name in ("inference", "worker"):
+        repo = aws("ecr", "describe-repositories", "--repository-names", f"parking-guardian/{name}")
+        report([] if repo.returncode == 0 else [f"ECR parking-guardian/{name} 가 없다 — data 스택 apply 가 먼저다"], f"ECR parking-guardian/{name} 가 있다")
 
 
 def stage_before_rebuild(use_aws: bool) -> None:
     print("[before-rebuild]")
     tags = parse_tags((APP_DIR / "kustomization.yaml").read_text(encoding="utf-8"))
-    report(tag_problems(tags), f"images: 태그 세 개가 같은 새 커밋 해시다 ({tags.get('backend')})")
+    report(tag_problems(tags), f"images: 태그 네 개가 같은 새 커밋 해시다 ({tags.get('backend')})")
     if tag_problems(tags) or not use_aws:
         if not use_aws:
             print("  (--aws 없이 실행: ECR 의 이미지 존재·크기는 확인하지 않았다)")
@@ -132,7 +142,7 @@ def stage_before_rebuild(use_aws: bool) -> None:
             report([f"ECR parking-guardian/{name}:{tags[name]} 가 없다 — CI 빌드가 끝나지 않았다"], "")
             continue
         size = json.loads(done.stdout)["imageDetails"][0]["imageSizeInBytes"]
-        problems = backend_size_problems(size) if name == "backend" else []
+        problems = backend_size_problems(size) if name == "backend" else worker_size_problems(size) if name == "worker" else []
         report(problems, f"ECR parking-guardian/{name}:{tags[name]} 가 있다 ({size / 1024 / 1024:.0f} MB)")
     rds = aws("rds", "describe-db-instances", "--db-instance-identifier", "parking-guardian", "--query", "DBInstances[0].DBInstanceStatus")
     status = json.loads(rds.stdout) if rds.returncode == 0 else "읽지 못함"
