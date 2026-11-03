@@ -1,0 +1,80 @@
+# relay (outbox relay): DB 의 pending_publish 작업을 SQS 로 다시 발행하고, DLQ 를 dead_lettered 로 옮기고, 끊긴 부수 효과(증거 사진 복사·알림)를
+# 마무리하고, 보존 기간을 정리하고, **메시지가 사라진 멈춘 작업을 되돌린다** (Phase 2, ADR 0019, 설계 6.7). 명령 `flask outbox-relay`.
+# API 의 즉시 전송이 실패하거나 Worker 가 죽어도 이 Pod 가 DB(진실의 원천)를 보고 복구한다. HTTP 서버가 없어 Service·Ingress 가 없다.
+#
+# 이미지: backend 와 같은 api 이미지(torch 없음, 압축 약 84 MB). 새 이미지·ECR 리포지토리가 필요 없다.
+#   "parking-guardian/backend:<태그>" 자리표시자를 images: + replacements(ECR_BACKEND)가 채운다.
+#
+# 권한: ServiceAccount relay → Pod Identity 역할 parking-guardian-relay (infra iam_phase2.tf).
+#   SQS 본 큐 SendMessage, DLQ Receive/Delete/ChangeMessageVisibility, S3 inbox 읽기·violations 쓰기. 모델 권한은 없다.
+#   DB 계정은 pipeline-secrets(DB_USER/DB_PASSWORD).
+#
+# 개수: **1개**로 시작한다. 여러 개를 동시에 띄워도 안전하다(작업 행 SKIP LOCKED, 조건부 UPDATE, 장비별 순서 가드 — 통합 검증과 PostgreSQL 테스트로 확인).
+#   그러나 HA 가 필요하지 않다: Relay 가 잠시 없어도 접수 API 의 즉시 전송 경로와 Worker 는 계속 동작하고, 재시작하면 밀린 것을 따라잡는다.
+#   단 멈춘 작업 복구(기본 24시간)와 SQS 보존(4일)이 있으므로 Relay 가 4일 넘게 없으면 안 된다.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: relay
+  namespace: parking-guardian
+  labels:
+    app.kubernetes.io/name: relay
+  annotations:
+    argocd.argoproj.io/sync-wave: "4" # 마이그레이션(1) 뒤, HPA(3) 뒤
+spec:
+  replicas: 1 # HPA·KEDA 가 없다. 고정값이라 Git 에 적는다
+
+  # 요청 50m 라 surge 자리가 항상 있다. 두 Relay 가 잠깐 같이 돌아도 안전하다.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: relay
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: relay
+    spec:
+      serviceAccountName: relay # Pod Identity: SQS 발행·DLQ + S3 inbox/violations
+      automountServiceAccountToken: false
+
+      # 종료 유예 15초. 앱의 flask outbox-relay 는 SIGTERM 을 받으면 지금 하는 단계(작업 하나의 전송·기록)를 끝내고, 그 회차의 남은 단계와
+      # 대기 시간을 건너뛴 뒤 종료 코드 0 으로 나간다(2026-11-03). Relay 의 모든 단계는 중간에 끊겨도 다음 회차가 이어받게 설계됐다
+      # (DB 먼저 기록, 조건부 UPDATE, 멱등 전송). SQS 가 느려 한 번의 전송이 15초를 넘으면 SIGKILL 이 되지만 그래도 안전하다.
+      terminationGracePeriodSeconds: 15
+
+      containers:
+        - name: relay
+          image: parking-guardian/backend:placeholder # images: + replacements(ECR_BACKEND)가 채운다. backend 와 같은 이미지
+          imagePullPolicy: IfNotPresent
+          command: ["flask", "outbox-relay"] # 기본 2초 간격, 1800회차마다 보존 정리. FLASK_APP=wsgi 는 이미지 ENV
+
+          # backend-config(DB_*, S3_BUCKET, SQS_*, INFERENCE_BACKEND=http …) + queue-config(QUEUE_BACKEND=sqs) + pipeline-secrets(DB 계정).
+          # Relay 는 추론을 하지 않는다. INFERENCE_BACKEND=http 라서 inference 어댑터는 만들어지기만 하고 호출되지 않는다.
+          envFrom:
+            - configMapRef:
+                name: backend-config
+            - configMapRef:
+                name: queue-config
+            - secretRef:
+                name: pipeline-secrets
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
+          # 설계 6.7: CPU 50m / 메모리 128Mi. 2초마다 DB 조회 몇 번 + DLQ 짧은 폴링 1번이라 거의 유휴다.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+
+          # probe 없음(HTTP 서버가 없다). worker-deployment.yaml 의 같은 항목 참고.

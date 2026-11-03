@@ -21,7 +21,10 @@ resources:
   - namespace.yaml
   - serviceaccount-backend.yaml
   - serviceaccount-inference.yaml
+  - serviceaccount-worker.yaml # Phase 2: Pod Identity 역할 parking-guardian-worker (infra iam_phase2.tf)
+  - serviceaccount-relay.yaml  # Phase 2: Pod Identity 역할 parking-guardian-relay
   - externalsecret.yaml
+  - externalsecret-pipeline.yaml # Phase 2: Worker·Relay 전용. DB 계정 2개만 (JWT·시드 비밀 없음)
   - backend-migrate-job.yaml # sync-wave 1: 배포 전 DB 마이그레이션
   - backend-deployment.yaml  # sync-wave 2
   - backend-service.yaml
@@ -33,6 +36,9 @@ resources:
   - inference-hpa.yaml        # Pod 2~3, CPU 70%
   - inference-pdb.yaml
   - inference-podmonitor.yaml
+  - worker-deployment.yaml    # sync-wave 4. Phase 2 판별 Worker (flask judge-worker, YOLO 프로세스 내장). Service 없음
+  - worker-scaledobject.yaml  # sync-wave 5. KEDA(SQS 대기 수). CRD 는 keda 앱이 설치
+  - relay-deployment.yaml     # sync-wave 4. Phase 2 아웃박스 Relay (flask outbox-relay). Service 없음
   - frontend-deployment.yaml
   - frontend-service.yaml
   - ingress.yaml
@@ -67,6 +73,21 @@ configMapGenerator:
       - TORCH_NUM_THREADS=1          # 시작값, 운영값이 아니다 (E0/E1 으로 정한다)
       - METRICS_PORT=9102
 
+  # Phase 2 공통 큐 설정. backend(API)·worker·relay 가 쓴다. SQS_QUEUE_URL / SQS_DLQ_URL 은 Terraform 출력값이라 config.env(backend-config)에 있다.
+  # backend-config 에 넣지 않은 이유: inference 의 initContainer 가 backend-config 를 키 단위로 읽어서, 거기 값을 더하면 해시가 바뀌어
+  # inference Pod 가 불필요하게 롤링된다. 큐 설정은 inference 와 상관없으므로 따로 둔다.
+  - name: queue-config
+    literals:
+      - QUEUE_BACKEND=sqs # none 이면 접수 API(POST /device/detection-jobs)가 404, Phase 1 동기 경로(POST /device/detections)는 이 값과 무관하다
+
+  # worker 전용 설정. 위 backend-config 의 INFERENCE_BACKEND=http 를 덮는다(Pod 의 envFrom 에서 worker-config 가 뒤에 온다).
+  # 모델 경로(/models/default.pt, last.pt)와 YOLOV5_DIR 은 prototype 이미지의 ENV 에 있다.
+  - name: worker-config
+    literals:
+      - INFERENCE_BACKEND=yolo       # 프로세스 안에서 모델을 돌린다(Phase 1 의 http 가 아니다)
+      - TORCH_NUM_THREADS=1          # inference-config 와 같은 시작값. E0 로 정한다
+      - INFERENCE_MAX_WAITING=2      # Worker 는 한 번에 한 건이라 쓰이지 않지만 inference-config 와 같게 둔다
+
   # frontend nginx 설정. 파일 그대로 ConfigMap 의 키 nginx.conf 가 된다. 이것도 해시가 붙어 바뀌면 frontend 가 롤링 재시작된다.
   # (설계 6.2 는 configmap-nginx.yaml 로 적었지만, 손으로 쓴 ConfigMap 은 내용이 바뀌어도 Pod 가 재시작되지 않아 생성기로 바꿨다.)
   - name: frontend-nginx
@@ -87,13 +108,17 @@ images:
     newTag: "c14a7f0"
   - name: parking-guardian/inference
     newTag: "c14a7f0"
+  # Phase 2 Worker. **이미지가 아직 없다**: Dockerfile 의 prototype 타깃을 빌드해 ECR 리포지토리 parking-guardian/worker 에 올리는 CI 단계와 리포지토리가 필요하다
+  # (docs/phase2.md 2절). 앱 리포 CI 의 태그 갱신은 위 세 줄만 쓴다. CI 가 네 줄을 쓰게 바뀌기 전까지 "unset" 이고, 그동안 worker Pod 만 ImagePullBackOff 다.
+  - name: parking-guardian/worker
+    newTag: "unset"
 
 # < replacements > 매니페스트의 자리표시자를 ConfigMap backend-config(config.env)의 값으로 바꾼다.
 # source: 어디서 값을 가져오나. target: 어느 리소스의 어느 필드에 넣나.
 # fieldPaths 의 [secretKey=SECRET_KEY] 는 "리스트에서 secretKey 가 SECRET_KEY 인 항목" 을 고르는 kustomize 문법.
 # 생성된 ConfigMap 이름에 해시가 붙어도 select.name 은 원래 이름(backend-config)으로 쓴다.
 replacements:
-  # 비밀 이름 3개 → ExternalSecret
+  # 비밀 이름 3개 → ExternalSecret (backend-secrets 의 4개 + RDS 2개, pipeline-secrets 의 RDS 2개)
   - source:
       kind: ConfigMap
       name: backend-config
@@ -127,6 +152,13 @@ replacements:
         fieldPaths:
           - spec.data.[secretKey=DB_USER].remoteRef.key
           - spec.data.[secretKey=DB_PASSWORD].remoteRef.key
+      # Phase 2: Worker·Relay 전용 Secret. 같은 RDS 비밀의 같은 두 키
+      - select:
+          kind: ExternalSecret
+          name: pipeline-secrets
+        fieldPaths:
+          - spec.data.[secretKey=DB_USER].remoteRef.key
+          - spec.data.[secretKey=DB_PASSWORD].remoteRef.key
   # 이미지 레지스트리 주소 → Deployment image.
   # image 는 images: 를 거친 뒤 "parking-guardian/backend:ffdb75e" 다. delimiter ":" 로 나눈 0번째(태그 앞부분)만
   # ECR_BACKEND("<계정>.dkr.ecr.<리전>.amazonaws.com/parking-guardian/backend")로 바꾸면 태그는 그대로 남는다.
@@ -140,6 +172,15 @@ replacements:
           name: backend
         fieldPaths:
           - spec.template.spec.containers.[name=backend].image
+        options:
+          delimiter: ":"
+          index: 0
+      # Phase 2 Relay 도 같은 backend(api) 이미지다
+      - select:
+          kind: Deployment
+          name: relay
+        fieldPaths:
+          - spec.template.spec.containers.[name=relay].image
         options:
           delimiter: ":"
           index: 0
@@ -178,6 +219,41 @@ replacements:
         options:
           delimiter: ":"
           index: 0
+  # Phase 2 Worker 이미지 (ECR 리포지토리 worker. 아직 없다: config.env 의 ECR_WORKER 는 이름 규칙으로 계산한 값)
+  - source:
+      kind: ConfigMap
+      name: backend-config
+      fieldPath: data.ECR_WORKER
+    targets:
+      - select:
+          kind: Deployment
+          name: worker
+        fieldPaths:
+          - spec.template.spec.containers.[name=worker].image
+        options:
+          delimiter: ":"
+          index: 0
+  # Phase 2 KEDA: 큐 URL(계정 ID 가 들어 있다)과 리전을 ScaledObject 에 채운다
+  - source:
+      kind: ConfigMap
+      name: backend-config
+      fieldPath: data.SQS_QUEUE_URL
+    targets:
+      - select:
+          kind: ScaledObject
+          name: worker
+        fieldPaths:
+          - spec.triggers.0.metadata.queueURL
+  - source:
+      kind: ConfigMap
+      name: backend-config
+      fieldPath: data.AWS_REGION
+    targets:
+      - select:
+          kind: ScaledObject
+          name: worker
+        fieldPaths:
+          - spec.triggers.0.metadata.awsRegion
   # Ingress: 호스트, 인증서 ARN, ALB SG. 어노테이션 키에 "." 과 "/" 가 있어 [ ] 로 감싼다.
   - source:
       kind: ConfigMap

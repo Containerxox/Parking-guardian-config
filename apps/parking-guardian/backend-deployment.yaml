@@ -79,6 +79,11 @@ spec:
           envFrom:
             - configMapRef:
                 name: backend-config
+            # Phase 2: QUEUE_BACKEND=sqs → 접수 API(POST /device/detection-jobs)가 켜진다. SQS_QUEUE_URL 은 backend-config(config.env)에서 온다.
+            # Phase 1 동기 경로(POST /device/detections → inference 서비스)는 그대로이고 이 값과 무관하다. 두 경로가 같은 API Pod 에서 공존한다.
+            # API 의 SQS 권한은 SendMessage 뿐이다(역할 parking-guardian-backend, infra iam.tf).
+            - configMapRef:
+                name: queue-config
             - secretRef:
                 name: backend-secrets
 

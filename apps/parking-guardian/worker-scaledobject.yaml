@@ -1,0 +1,105 @@
+# worker 의 KEDA 자동 확장 (Phase 2, 설계 6.14). SQS 판별 큐의 대기 수로 Worker 수를 정한다.
+# KEDA 가 이 ScaledObject 로 HPA(keda-hpa-worker)를 만들어 worker Deployment 를 조절한다. backend 의 HPA(CPU 기반)와는 대상이 달라 서로 영향이 없다.
+#
+# --- 설정값과 이유 ---------------------------------------------------------------------------------------------------------
+# minReplicaCount 0   **공존 구성(Phase 1 inference 2개가 같이 떠 있는 3노드)의 초기 검증용**이다. 설계 6.14 는 min 1 이지만(첫 사진이 이미지 Pull 압축 약 660 MB +
+#                     모델 다운로드 412 MB + 로딩 = 수 분을 기다리지 않게), 공존 구성에서는 Worker 가 떠 있는 동안 노드에 자리가 없다(scripts/check-phase2-render.py):
+#                       - 배포 때 마이그레이션 Job(100m)이 들어갈 노드가 없어 sync 가 멈춘다
+#                       - inference 롤링의 surge Pod(1000m)가 들어갈 노드가 없어 롤링이 멈춘다 (wave 2 가 Healthy 가 안 되니 뒤 wave 도 막힌다)
+#                     Worker 가 0 이면 Phase 1 과 같은 여유(노드 하나가 비어 있다)라 둘 다 문제없다. 큐가 비고 cooldownPeriod(300초) 뒤 0 으로 돌아간다.
+#                     0→1 활성화: 큐에 메시지가 하나라도 있으면(activationQueueLength 기본 0) KEDA 가 직접 1 로 올린다. 처리 중인 메시지도 센다(scaleOnInFlight).
+#                     대가: 유휴 뒤 첫 사진은 Worker 콜드 스타트(수 분)를 기다린다. 부하 테스트·비교 측정에서는 min 1 로 올린다 → docs/phase2.md 4절.
+# maxReplicaCount 1   공존 구성에서 Worker 는 1개만 들어간다(요청 1000m, 노드당 앱 가용 1280m). 2 이상은 inference 를 내린 "비교 구성"(docs/phase2.md 4절)에서만 의미가 있다.
+#                     올리지 않은 채 큐가 쌓여도 두 번째 Worker 는 Pending 이 되어 아무 이득이 없다.
+# pollingInterval 15  15초마다 큐 길이를 읽는다. GetQueueAttributes 하루 5,760번(월 약 17만 건)으로 SQS 무료 범위 안이다.
+# queueLength "5"     Worker 1개가 감당할 대기 수 목표. 판정 한 건은 중앙값 약 0.7초(CPU 를 나눠 쓸 때)라 5건 ≈ 4초 지연이다. 이 값은 E0 처리량으로 다시 정한다.
+#                     KEDA 는 보이는 메시지 + 처리 중(NotVisible) 메시지를 합쳐 센다(scaleOnInFlight 기본 true).
+# cooldownPeriod 300  마지막 활동 뒤 0 으로 줄이기까지 기다리는 시간(min 0 일 때만 쓰인다). 모델을 다시 받는 비용이 커서 5분은 기다린다.
+# scaleDown 300초 안정화  모델을 다시 받는 비용(수 분)이 커서 빨리 줄이지 않는다. 한 번에 1개씩.
+# fallback            큐 길이를 읽지 못하는 상태(IAM 누락 등)가 3번 이어지면 Worker 를 fallback.replicas(1)로 유지한다.
+#                     !! 이미 떠 있는 Worker 에만 효과가 있다 !! KEDA 소스(scale_scaledobjects.go RequestScale)와 문서 확인(2026-11-03):
+#                       - Worker 가 1개 이상 + 오류: 0 으로 줄이지 않고 HPA 가 fallback 개수를 유지한다
+#                       - Worker 가 0개 + 오류(예: KEDA IAM 연결이 없다): 0 → 1 로 올리지 **못한다**(로그만 남기고 HPA 는 0 에서 동작하지 않는다).
+#                         → 큐에 메시지가 쌓이는데 Worker 가 없는 **조용한 정지**가 된다. 배포 뒤 반드시 `kubectl -n parking-guardian get scaledobject worker`
+#                         의 READY 가 True 인지 본다(False/TriggerError 면 KEDA 인증 문제). 큐 정체 경보(ApproximateAgeOfOldestMessage)가 마지막 그물이다.
+#                     fallback 은 aws-sqs-queue 처럼 AverageValue 지표 트리거에서 지원된다(CPU·메모리 트리거만 제외).
+#
+# --- FIFO 와 병렬성의 한계 ---------------------------------------------------------------------------------------------------
+# 큐는 SQS FIFO 이고 MessageGroupId = 장비다. 같은 그룹은 앞 메시지가 끝나기(삭제되기)까지 다음 메시지가 나오지 않는다.
+# 그래서 Worker 를 몇 개로 늘려도 **한 장비의 메시지는 한 번에 하나씩** 처리된다. 확장이 도움이 되는 것은 "여러 장비가 동시에 쌓일 때" 뿐이다.
+# 장비가 3대면 Worker 3개가 한계이고, 한 장비가 몰려도 그 장비의 지연은 줄지 않는다. KEDA 의 대기 수 지표는 이 그룹 제약을 모른다:
+# 한 장비에 메시지가 20개 쌓이면 Worker 4개를 요구하지만 실제로 일하는 것은 1개다. maxReplicaCount 를 장비 수 이하로 둔다.
+#
+# --- 인증 ---------------------------------------------------------------------------------------------------------------
+# TriggerAuthentication podIdentity.provider: aws, roleArn 없음 → KEDA operator 의 기본 AWS 자격 증명 체인을 쓴다(KEDA 소스 aws_config_cache.go:
+# UsingPodIdentity 이고 AwsRoleArn 이 비면 LoadDefaultConfig 의 자격 증명을 유지). EKS Pod Identity 는 operator Pod 에
+# AWS_CONTAINER_CREDENTIALS_FULL_URI 를 주입하고 Go SDK 의 기본 체인이 읽는다.
+# **전제(아직 없음)**: ServiceAccount keda/keda-operator 에 IAM 역할(sqs:GetQueueAttributes, 본 큐)을 Pod Identity 로 연결해야 한다 → docs/phase2.md 2절.
+#
+# --- 적용 순서 ---------------------------------------------------------------------------------------------------------
+# CRD(ScaledObject, TriggerAuthentication)는 keda 앱(argocd/apps/keda.yaml)이 설치한다. 그 전에 이 파일이 적용되면 "kind 없음" 으로 실패하므로
+# SkipDryRunOnMissingResource 로 dry-run 을 건너뛰고, parking-guardian Application 의 retry 가 CRD 가 생길 때까지 재시도한다(PodMonitor 와 같은 방식).
+# sync-wave 5: 대상 Deployment(wave 4)보다 뒤.
+#
+# --- 일시 정지(S5 의 "Worker 0개" 실험 등) -------------------------------------------------------------------------------------
+# 손으로 replicas 를 바꿔도 KEDA 가 되돌린다. S5 의 "Worker 0개" 실험은 정지 어노테이션을 쓴다(Argo CD 자동 동기화를 먼저 멈춘다):
+#   kubectl -n parking-guardian annotate scaledobject worker autoscaling.keda.sh/paused-replicas="0"
+#   kubectl -n parking-guardian annotate scaledobject worker autoscaling.keda.sh/paused-replicas-   # 해제
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: worker-sqs-auth
+  namespace: parking-guardian
+  labels:
+    app.kubernetes.io/name: worker
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  podIdentity:
+    provider: aws # roleArn 을 적지 않는다: KEDA operator 자신의 Pod Identity 자격 증명을 쓴다
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker
+  namespace: parking-guardian
+  labels:
+    app.kubernetes.io/name: worker
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  scaleTargetRef:
+    name: worker # apps/v1 Deployment
+  pollingInterval: 15
+  cooldownPeriod: 300
+  minReplicaCount: 0 # 공존 구성의 초기 검증용 (위 설명). 부하 테스트·비교 측정에서는 1
+  maxReplicaCount: 1 # 공존 구성의 한계. 비교 구성에서만 2~3
+  fallback:
+    failureThreshold: 3
+    replicas: 1
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 120
+  triggers:
+    - type: aws-sqs-queue
+      authenticationRef:
+        name: worker-sqs-auth
+      metadata:
+        queueURL: SQS_QUEUE_URL # 자리표시자. kustomization.yaml 의 replacements 가 config.env 의 값으로 바꾼다(계정 ID 가 이 파일에 없다)
+        awsRegion: AWS_REGION   # 자리표시자. 같은 방식
+        queueLength: "5"
+        scaleOnInFlight: "true"

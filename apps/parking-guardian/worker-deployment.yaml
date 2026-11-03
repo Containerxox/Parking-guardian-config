@@ -1,0 +1,167 @@
+# worker: SQS 에서 판별 작업을 받아 YOLO 로 판정하고 사건 상태에 반영한다 (Phase 2, ADR 0019, 설계 6.8). 명령 `flask judge-worker`.
+# Phase 1 의 inference 서비스(HTTP)와 다르다: Worker 는 **프로세스 안에서** 두 YOLOv5 모델을 돌리고(INFERENCE_BACKEND=yolo),
+# DB·S3·SQS 에 직접 접속한다. HTTP 서버가 없어 Service 도 Ingress 도 없다.
+#
+# 이미지: "parking-guardian/worker:<태그>" 는 자리표시자. images: 가 태그를, replacements 가 레지스트리(config.env 의 ECR_WORKER)를 채운다.
+#   Dockerfile 의 `prototype` 타깃(API 의존성 + torch + YOLOv5)으로 만든다. **이 이미지와 ECR 리포지토리 worker 는 아직 없다** → docs/phase2.md 2절.
+#   그때까지 이 Deployment 는 ImagePullBackOff 이고, 다른 워크로드에는 영향이 없다(sync-wave 4 라서 HPA(wave 3)가 먼저 적용된다).
+#
+# 권한: ServiceAccount worker → Pod Identity 역할 parking-guardian-worker (infra cluster 스택 iam_phase2.tf).
+#   SQS 본 큐 Receive/Delete/ChangeMessageVisibility, S3 inbox 읽기·violations 쓰기, 모델 버킷 읽기. DB 계정은 pipeline-secrets(DB_USER/DB_PASSWORD).
+#
+# 시작 순서: backend-migrate Job(wave 1)이 새 스키마를 만든 뒤(wave 4 > 1) → initContainer(모델 다운로드) → worker 컨테이너.
+#   컨테이너는 **첫 receive 전에** 모델을 읽고 두 모델을 한 번씩 돌려 본다(앱 flask judge-worker 의 preload, 2026-11-03). 그동안 큐는 건드리지 않는다.
+#   로딩이 실패하면 메시지를 하나도 받지 않고 오류 종료(코드 1)하며, kubelet 이 재시작한다(CrashLoopBackOff). 로컬 실측(Compose, CPU 공유):
+#   로딩 약 20초 + 첫 순전파 약 2.4초 → "ready" 까지 약 26초. HTTP 서버가 없어 이 구간을 readiness 로 표현할 수 없다 → docs/phase2.md 6.5.
+#
+# 판정 규칙(변경 없음): lease 55초 < SQS visibility 60초, claim_attempt 펜싱. Worker 가 중간에 죽어도 메시지가 60초 뒤 다시 와서 다른 Worker 가 처리한다.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: parking-guardian
+  labels:
+    app.kubernetes.io/name: worker
+  annotations:
+    argocd.argoproj.io/sync-wave: "4" # 마이그레이션(1) 뒤, HPA(3) 뒤. 이미지가 없어도 Phase 1 의 HPA 적용을 막지 않는다
+spec:
+  # replicas 없음: KEDA(worker-scaledobject.yaml)가 만든 HPA 가 정한다. 여기 값을 두면 Argo CD selfHeal 이 KEDA 의 결정을 되돌린다.
+
+  # 롤링: 먼저 내리고 새로 띄운다(maxSurge 0, maxUnavailable 1). Worker 는 요청 1000m 라 노드 3대(노드당 1280m)에서 surge Pod 가 들어갈 자리가 없다.
+  #   Worker 가 잠시 없어도 서비스는 끊기지 않는다: 접수 API 는 큐에 쌓고(202), 판정만 지연된다. 내려가는 Worker 가 처리 중이던 메시지는 60초 뒤 다시 온다.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: worker
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: worker
+    spec:
+      serviceAccountName: worker # Pod Identity: 큐 소비 + inbox/violations + 모델
+      automountServiceAccountToken: false
+
+      # 분산은 "가능하면" (preferred). 여러 Worker 가 한 노드에 몰려도 동작은 같다. 요청 CPU 가 커서 실제로는 노드당 1개씩 들어간다.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: worker
+                topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: worker
+
+      # 종료 유예 60초 = SQS visibility timeout 60초 >= lease 55초. 앱의 flask judge-worker 는 SIGTERM 을 받으면 (1) 새 메시지를 받지 않고 (2) 처리 중인 메시지는
+      #   끝까지 처리한 뒤(판정·반영·부수 효과·삭제) (3) 종료 코드 0 으로 나간다. 유휴 Worker 는 진행 중인 긴 폴링(최대 20초)이 끝나면 나간다.
+      #   긴 폴링에서 메시지가 돌아와 버린 경우에는 처리하지 않고 즉시 큐에 돌려준다(visibility 0).
+      #   유예 안에 못 끝나면(SIGKILL) 데이터는 그대로 안전하다: lease(55초)가 끝나고 메시지가 60초 뒤 다시 와서 다른 Worker 가 claim 하며,
+      #   claim_attempt 펜싱이 죽은 Worker 의 늦은 결과를 버린다. 로컬 실측은 앱 리포 ADR 0019 "P4·P5 구현". (구현 전에는 SIGTERM 이 PID 1 에서 무시되어
+      #   항상 이 시간을 다 기다린 뒤 SIGKILL 이었다)
+      terminationGracePeriodSeconds: 60
+
+      securityContext:
+        fsGroup: 10001 # emptyDir 의 그룹을 앱 사용자(uid 10001, Dockerfile 의 app)로. initContainer 가 받은 모델을 앱이 읽을 수 있게
+
+      volumes:
+        - name: models
+          emptyDir:
+            sizeLimit: 1Gi # 모델 412 MB + 여유. Pod 마다 새로 받는다(inference 와 같음)
+
+      initContainers:
+        # inference 의 fetch-models 와 같다: 모델 버킷의 <MODEL_VERSION>/ 를 /models 로. S3 Gateway Endpoint 를 타서 NAT 를 거치지 않는다.
+        # Worker 역할의 모델 읽기 권한(v*/ List·Get)이 infra iam_phase2.tf 에 있다.
+        - name: fetch-models
+          image: public.ecr.aws/aws-cli/aws-cli:2.38.6
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              echo "fetch-models start $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              aws s3 sync "s3://${MODELS_BUCKET}/${MODEL_VERSION}/" /models/ --no-progress
+              echo "fetch-models end   $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              ls -l /models
+          env:
+            - name: MODELS_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: MODELS_BUCKET
+            - name: MODEL_VERSION
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: MODEL_VERSION
+            - name: AWS_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: AWS_REGION
+          volumeMounts:
+            - name: models
+              mountPath: /models
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+
+      containers:
+        - name: worker
+          image: parking-guardian/worker:placeholder # images: + replacements 가 채운다
+          imagePullPolicy: IfNotPresent
+          command: ["flask", "judge-worker"] # FLASK_APP=wsgi 는 이미지 ENV. 이미지의 CMD(gunicorn)를 덮어쓴다
+
+          # 환경변수 4겹. 같은 키가 여러 곳에 있으면 **뒤에 오는 것이 이긴다**(Kubernetes 규칙):
+          #   backend-config  Terraform 출력값 + 공통 고정값(DB_*, S3_BUCKET, SQS_*, STORAGE_BACKEND=s3, DB_SSLMODE …). INFERENCE_BACKEND=http 도 여기 있다
+          #   queue-config    QUEUE_BACKEND=sqs
+          #   worker-config   INFERENCE_BACKEND=yolo (위의 http 를 덮는다), TORCH_NUM_THREADS 등. 순서를 바꾸면 Worker 가 inference 서비스를 부르려 한다
+          #   pipeline-secrets  DB_USER / DB_PASSWORD 만 (JWT·시드 비밀 없음)
+          envFrom:
+            - configMapRef:
+                name: backend-config
+            - configMapRef:
+                name: queue-config
+            - configMapRef:
+                name: worker-config
+            - secretRef:
+                name: pipeline-secrets
+
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
+          # 요청은 [추정]이다. inference 와 같은 모델 2개를 같은 방식(스레드 1)으로 돌리므로 같은 값에서 시작한다:
+          #   로컬 Linux 최대 RSS 1363 MiB(+ SQLAlchemy·boto3 약 100 MiB) → 요청 1.5Gi, limit 2Gi. CPU 는 스레드 1 개 ≈ 1코어.
+          #   EKS 의 실측(S0/E0)으로 조정한다. CPU limit 은 두지 않는다.
+          #   이 값 때문에 3노드에서 Worker 는 inference 와 같은 노드에 못 들어간다(노드당 1280m) → docs/phase2.md 3절.
+          resources:
+            requests:
+              cpu: 1000m
+              memory: 1.5Gi
+            limits:
+              memory: 2Gi
+
+          # HTTP 서버가 없어 probe 를 두지 않는다(/healthz, /readyz, /metrics 는 gunicorn 설정이 내는 것이다).
+          # 모델 로딩 실패는 오류 종료라 kubelet 이 재시작한다. 멈춘(교착) 프로세스는 아직 못 잡는다(메시지는 lease·visibility 로 다른 Worker 에게 넘어가지만
+          # 멈춘 Pod 자체는 남는다) → 해결안(heartbeat 파일 + exec livenessProbe)은 docs/phase2.md 6.5.
