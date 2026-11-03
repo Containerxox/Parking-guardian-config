@@ -10,16 +10,18 @@ Parking Guardian 의 Kubernetes 매니페스트(Kustomize). AWS 인프라는 `pa
 platform/                        클러스터 1벌(앱과 무관한 공용 오브젝트. Argo 앱 platform, 하위 폴더는 포함 안 함)
 ├─ cluster-secret-store.yaml     ClusterSecretStore aws-secrets-manager (Pod Identity 인증, auth 블록 없음)
 ├─ storageclass-gp3.yaml         EBS CSI gp3 (Prometheus TSDB). infra cluster 스택 ebs_csi.tf 가 전제
+├─ keda/
+│  └─ values.yaml                KEDA 차트 2.21.0 값(리소스 요청만 줄임. Argo 앱 keda 가 $values 로 읽음)
 └─ monitoring/
    ├─ values.yaml                kube-prometheus-stack Helm 값 (Argo 앱 monitoring 이 $values 로 읽음)
    └─ config/                    Argo 앱 monitoring-config: ExternalSecret grafana-admin + 대시보드 ConfigMap
       └─ dashboards/             build_dashboards.py → phase-comparison / resources / inference .json
 argocd/
 ├─ root.yaml                     app-of-apps 뿌리(kubectl apply 1회)
-└─ apps/                         platform, parking-guardian, monitoring, monitoring-config
+└─ apps/                         platform, parking-guardian, monitoring, monitoring-config, keda
 apps/parking-guardian/           앱 1벌. Kustomize 단일 구성(overlay 없음)
 ├─ kustomization.yaml            configMapGenerator 2개, images: 태그, replacements
-├─ config.env.example            키 16개와 출처. 실제 config.env 는 gitignore
+├─ config.env.example            키 20개와 출처 (Phase 2 에서 SQS_QUEUE_URL, SQS_DLQ_URL, ECR_WORKER 추가)
 ├─ nginx.conf                    frontend nginx 설정(ConfigMap frontend-nginx 의 원본)
 ├─ namespace.yaml, serviceaccount-backend.yaml
 ├─ externalsecret.yaml           backend-secrets ← Secrets Manager 비밀 3개(키 이름만)
@@ -29,9 +31,18 @@ apps/parking-guardian/           앱 1벌. Kustomize 단일 구성(overlay 없�
 ├─ backend-pdb.yaml              PodDisruptionBudget minAvailable 50%
 ├─ backend-podmonitor.yaml       Prometheus 가 backend :9102/metrics 를 15초마다 긁음
 ├─ frontend-deployment.yaml, frontend-service.yaml
-└─ ingress.yaml                  ALB(internet-facing, ip 타깃, 80→443, ACM, 이름 parking-guardian)
+├─ ingress.yaml                  ALB(internet-facing, ip 타깃, 80→443, ACM, 이름 parking-guardian)
+├─ serviceaccount-worker.yaml, serviceaccount-relay.yaml, externalsecret-pipeline.yaml   Phase 2: 신원 2개 + Worker·Relay 전용 Secret(DB 계정만)
+├─ worker-deployment.yaml        Phase 2 판별 Worker (flask judge-worker, sync-wave 4, replicas 없음 → KEDA)
+├─ worker-scaledobject.yaml      Phase 2 KEDA ScaledObject + TriggerAuthentication (SQS 대기 수, sync-wave 5)
+├─ relay-deployment.yaml         Phase 2 아웃박스 Relay (flask outbox-relay, backend 이미지, sync-wave 4)
+└─ comparison-mode.example.yaml  부하 테스트용 "비교 구성" 패치(사용하지 않는 예시. inference 제거 + Worker 확대)
 scripts/
-└─ export-config-env.py          infra 리포의 terraform output → config.env
+├─ export-config-env.py          infra 리포의 terraform output → config.env
+├─ check-phase1-render.py, check-placement.py, preflight-deploy.py   Phase 1 렌더링·배치·단계 사이 점검
+└─ check-phase2-render.py        Phase 2 렌더링·계약·참조·배치 검증과 배포 전 준비 사항 목록(--strict)
+docs/
+└─ phase2.md                     Phase 2 배포 구성, 준비 사항, 리소스·비용, KEDA 정책, 위험
 ```
 
 ## 값은 세 곳에서 온다
@@ -136,12 +147,22 @@ kubectl -n monitoring port-forward svc/monitoring-prometheus 9090:9090    # http
 
 전제 순서: infra cluster 스택 EBS CSI add-on → data 스택 `parking-guardian/grafana` 비밀 생성·값 주입 → platform 스택 ESO 정책에 그 ARN → 이 리포 push. Grafana Pod 는 Secret 이 생길 때까지 CreateContainerConfigError 로 기다린다(정상). PodMonitor 는 monitoring 앱의 CRD 가 먼저 있어야 하며, 없으면 parking-guardian 앱이 retry 로 기다린다.
 
+## Phase 2 (Worker · Relay · KEDA)
+
+접수와 AI 판별을 SQS FIFO 로 떼어 낸 구성이다(앱 리포 ADR 0019). 자세한 내용은 [docs/phase2.md](docs/phase2.md).
+
+- `worker`(YOLO 내장, KEDA 가 SQS 대기 수로 0~1개), `relay`(재발행·DLQ·멈춘 작업 복구, 1개), Argo 앱 `keda`. Phase 1 의 api / inference / frontend 는 그대로다.
+- **배포 전에 아직 없는 것**: ECR `worker` 리포지토리와 CI 빌드, KEDA operator 의 IAM·Pod Identity, 앱의 SIGTERM 처리·warm_up (docs/phase2.md 2절).
+- 검증(클러스터·AWS 에 아무것도 하지 않는다): `PYTHONUTF8=1 python scripts/check-phase2-render.py` (`--strict` 는 준비 사항이 남아 있으면 실패)
+- 3노드에서는 Worker 가 떠 있는 동안 마이그레이션 Job 과 inference 롤링이 막힌다. 기본은 Worker 0~1(유휴 시 0)이고 **배포는 큐가 빈 뒤에** 한다.
+  부하 테스트는 `comparison-mode.example.yaml` 의 "비교 구성"으로 한다.
+
 ## 삭제
 
 순서가 중요하다. **Ingress 를 먼저 지워 ALB 가 사라진 것을 확인한 뒤** infra 의 `platform` 스택을 지운다. 컨트롤러가 먼저 사라지면 ALB·타깃 그룹·SG 규칙이 고아로 남는다.
 
 ```powershell
-# Argo CD 사용 중이면 kubectl delete 대신 Application 을 지운다: root → parking-guardian(ALB 사라질 때까지) → monitoring, monitoring-config(PVC 삭제) → platform
+# Argo CD 사용 중이면 kubectl delete 대신 Application 을 지운다: root → parking-guardian(ALB 사라질 때까지) → keda(ScaledObject 의 finalizer 때문에 parking-guardian 뒤) → monitoring, monitoring-config(PVC 삭제) → platform
 kubectl delete -k apps/parking-guardian/          # Ingress 포함. ALB 삭제 1~2분
 aws elbv2 describe-load-balancers --names parking-guardian   # LoadBalancerNotFound 가 나와야 다음으로
 kubectl delete -f platform/
