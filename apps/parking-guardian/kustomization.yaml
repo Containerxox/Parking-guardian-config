@@ -103,15 +103,15 @@ configMapGenerator:
 # 반드시 따옴표로 감싼다: 해시가 숫자만으로 이뤄지면(예: 3993669) YAML 이 정수로 읽어 kustomize build 가 실패한다(2026-10-28 실제 발생).
 images:
   - name: parking-guardian/backend
-    newTag: "c14a7f0"
+    newTag: "60c2e43"
   - name: parking-guardian/frontend
-    newTag: "c14a7f0"
+    newTag: "60c2e43"
   - name: parking-guardian/inference
-    newTag: "c14a7f0"
+    newTag: "60c2e43"
   # Phase 2 Worker. **이미지가 아직 없다**: Dockerfile 의 prototype 타깃을 빌드해 ECR 리포지토리 parking-guardian/worker 에 올리는 CI 단계와 리포지토리가 필요하다
   # (docs/phase2.md 2절). 앱 리포 CI 의 태그 갱신은 위 세 줄만 쓴다. CI 가 네 줄을 쓰게 바뀌기 전까지 "unset" 이고, 그동안 worker Pod 만 ImagePullBackOff 다.
   - name: parking-guardian/worker
-    newTag: "unset"
+    newTag: "60c2e43"
 
 # < replacements > 매니페스트의 자리표시자를 ConfigMap backend-config(config.env)의 값으로 바꾼다.
 # source: 어디서 값을 가져오나. target: 어느 리소스의 어느 필드에 넣나.
