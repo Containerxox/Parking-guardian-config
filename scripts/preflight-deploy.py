@@ -27,6 +27,7 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -82,6 +83,37 @@ def worker_size_problems(size_bytes: int) -> list[str]:
     if size_bytes <= API_MAX_BYTES:
         return [f"ECR 의 worker 이미지가 {size_bytes / 1024 / 1024:.0f} MB 다 — prototype 타깃(약 660 MB)이 아니라 api 타깃(약 84 MB)으로 보인다. CI 의 worker target 설정을 확인한다"]
     return []
+
+
+RDS_AUTO_START = timedelta(days=7)   # AWS 는 정지한 RDS 인스턴스를 7일 뒤 자동으로 다시 시작한다
+
+
+def rds_notice(status: str | None, last_stopped: datetime | None, now: datetime | None = None) -> str:
+    """RDS 상태에 맞는 안내 한 줄. 날짜를 코드에 적지 않고, 인스턴스 자신의 마지막 정지 이벤트에서 자동 시작 시각을 계산한다."""
+    if not status:
+        return "RDS 상태를 읽지 못했다(AWS_PROFILE, 권한 확인)"
+    if status == "available":
+        return "RDS 상태: available — 이미 켜져 있다. 시작 뒤에는 `SHOW max_connections` 로 연결 한도를 확인한다"
+    if status != "stopped":
+        return f"RDS 상태: {status} (시작·정지·수정 중이다. available 이 될 때까지 기다린다)"
+    start_it = "시작이 필요하다(마이그레이션 Job 이 DB 에 붙는다. `aws rds start-db-instance` 는 별도 승인 뒤에, available 이 되면 `SHOW max_connections` 확인)"
+    if last_stopped is None:
+        return f"RDS 상태: stopped — {start_it}. 마지막 정지 시각을 읽지 못해 자동 시작 시각은 알 수 없다"
+    auto = last_stopped + RDS_AUTO_START
+    now = now or datetime.now(timezone.utc)
+    when = auto.strftime("%Y-%m-%d %H:%M UTC")
+    tail = (f"AWS 가 정지 7일째인 {when}경에 자동으로 다시 켠다(그 전에 쓰려면 직접 시작한다)" if auto > now
+            else f"정지 7일({when})이 이미 지났다: 그 뒤에 다시 정지된 것이다. 정지 이벤트를 확인한다")
+    return f"RDS 상태: stopped — {start_it}. 마지막 정지 {last_stopped.strftime('%Y-%m-%d %H:%M UTC')}, {tail}"
+
+
+def rds_last_stopped() -> datetime | None:
+    """describe-events(보존 14일)에서 가장 최근의 "stopped" 이벤트 시각. 없으면 None."""
+    done = aws("rds", "describe-events", "--source-type", "db-instance", "--source-identifier", "parking-guardian", "--duration", "20160")
+    if done.returncode:
+        return None
+    dates = [datetime.fromisoformat(e["Date"]) for e in json.loads(done.stdout).get("Events", []) if "stopped" in e.get("Message", "")]
+    return max(dates) if dates else None
 
 
 # --- 점검 실행 (위의 판단 함수 + 실제 환경) ------------------------------------------------------------------------
@@ -145,8 +177,8 @@ def stage_before_rebuild(use_aws: bool) -> None:
         problems = backend_size_problems(size) if name == "backend" else worker_size_problems(size) if name == "worker" else []
         report(problems, f"ECR parking-guardian/{name}:{tags[name]} 가 있다 ({size / 1024 / 1024:.0f} MB)")
     rds = aws("rds", "describe-db-instances", "--db-instance-identifier", "parking-guardian", "--query", "DBInstances[0].DBInstanceStatus")
-    status = json.loads(rds.stdout) if rds.returncode == 0 else "읽지 못함"
-    print(f"  info  RDS 상태: {status} (stopped 면 6-2 에서 켜고 `SHOW max_connections` 를 확인한다. 2026-11-04 에 자동으로 켜진다)")
+    status = json.loads(rds.stdout) if rds.returncode == 0 else None
+    print(f"  info  {rds_notice(status, rds_last_stopped() if status == 'stopped' else None)}")
 
 
 def main() -> int:

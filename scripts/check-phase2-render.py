@@ -476,14 +476,36 @@ def check_comparison_mode() -> None:
     check(not problems, "참조 관계와 오토스케일러 충돌에 문제가 없다" + (f" — {problems}" if problems else ""))
 
 
+def worker_tag_problem(kustomization: str) -> str | None:
+    """Why the worker image tag in `images:` cannot be deployed, or None when it can.
+
+    The CI writes one commit hash into all four newTag lines after it has built and pushed the images. Until then (or if the worker entry
+    disappears from kustomization.yaml, or the CI wrote only part of the lines) the worker Pod would be ImagePullBackOff, so a deploy must stop.
+    This is a pure function of the file's text so it can be tested without depending on what the repository contains today."""
+    def tag_of(name: str) -> str | None:
+        found = re.search(rf"- name: parking-guardian/{name}\s*\n\s+newTag: \"?([^\"\s]+)\"?", kustomization)
+        return found.group(1) if found else None
+
+    worker, backend = tag_of("worker"), tag_of("backend")
+    if worker is None:
+        return "images: 에 worker 항목 없음 (CI 의 태그 갱신이 찾지 못해 실패한다)"
+    if worker == "unset":
+        return "worker 태그가 \"unset\" 이다 (CI 가 아직 worker 이미지를 올리고 태그를 쓰지 않았다)"
+    if worker == "placeholder" or not re.fullmatch(r"[0-9a-f]{7,40}", worker):
+        return f"worker 태그 {worker!r} 가 커밋 해시가 아니라 placeholder 이다"
+    if backend is not None and worker != backend:
+        return f"worker 태그 {worker} 가 backend 태그 {backend} 와 같은 커밋이 아니다 (CI 한 번이 네 줄을 함께 쓴다: 반쯤 끝난 실행)"
+    return None
+
+
 def prerequisites(objs: list[dict]) -> None:
     print("\n[배포 전에 필요한 준비 사항 — TODO 는 --strict 에서 실패다]")
     env = dict(line.split("=", 1) for line in (REPO / "apps" / "parking-guardian" / "config.env").read_text(encoding="utf-8").splitlines()
                if "=" in line and not line.startswith("#"))
     todo(all(env.get(k) for k in ("SQS_QUEUE_URL", "SQS_DLQ_URL", "ECR_WORKER")), "config.env 에 SQS_QUEUE_URL / SQS_DLQ_URL / ECR_WORKER 가 있다")
     kust = (REPO / "apps" / "parking-guardian" / "kustomization.yaml").read_text(encoding="utf-8")
-    m = re.search(r"- name: parking-guardian/worker\s*\n\s+newTag: \"?([^\"\s]+)\"?", kust)
-    todo(bool(m) and m.group(1) != "unset", f"images: 의 worker 태그가 \"unset\" 이 아니다 (실제: {m.group(1) if m else '항목 없음'})")
+    problem = worker_tag_problem(kust)
+    todo(problem is None, "images: 의 worker 태그가 유효한 커밋 해시이고 backend 태그와 같다" + (f" — {problem}" if problem else ""))
     ecr = INFRA / "terraform" / "stacks" / "data" / "storage_ecr.tf"
     todo(ecr.exists() and re.search(r'ecr_repositories\s*=\s*toset\(\[[^\]]*"worker"', ecr.read_text(encoding="utf-8")) is not None,
          "infra data 스택에 ECR 리포지토리 worker 가 있다 (storage_ecr.tf 의 ecr_repositories. CI 역할의 push 권한은 cicd.tf 가 모든 리포지토리를 대상으로 하므로 같이 생긴다)")

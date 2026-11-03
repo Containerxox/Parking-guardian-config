@@ -85,6 +85,33 @@ def test_a_worker_image_the_size_of_the_api_image_means_the_wrong_target():
     assert any("api" in p for p in preflight.worker_size_problems(84_326_847))
 
 
+def test_a_stopped_rds_notice_computes_the_automatic_restart_from_the_real_stop_time():
+    """AWS starts a stopped instance again after 7 days. The date must come from the instance's own stop event, not from the script."""
+    from datetime import datetime, timezone
+    stopped = datetime(2026, 11, 1, 12, 48, 45, tzinfo=timezone.utc)
+    text = preflight.rds_notice("stopped", stopped, now=datetime(2026, 11, 3, tzinfo=timezone.utc))
+    assert "stopped" in text and "시작이 필요" in text            # the action is spelled out, not just mentioned
+    assert "2026-11-08" in text                    # stop + 7 days
+    assert "2026-11-04" not in text                # the old hard-coded date
+
+
+def test_a_stopped_rds_without_a_stop_event_still_says_it_must_be_started():
+    text = preflight.rds_notice("stopped", None)
+    assert "시작이 필요" in text and "읽지 못" in text
+    assert "자동" not in text.replace("자동 시작 시각", "")   # no invented restart date
+
+
+def test_an_available_rds_needs_no_action_and_other_states_are_shown_as_they_are():
+    assert "available" in preflight.rds_notice("available", None) and "켜져 있다" in preflight.rds_notice("available", None)
+    assert "starting" in preflight.rds_notice("starting", None)
+    assert "읽지 못" in preflight.rds_notice(None, None)
+
+
+def test_the_script_no_longer_contains_a_hard_coded_restart_date():
+    source = (Path(__file__).resolve().parent / "preflight-deploy.py").read_text(encoding="utf-8")
+    assert "2026-11-04" not in source
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

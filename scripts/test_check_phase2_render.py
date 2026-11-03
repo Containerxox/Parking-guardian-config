@@ -4,6 +4,7 @@
 "결함 주입" 테스트: 렌더링된 객체를 일부러 망가뜨려서 검사가 그 문제를 잡는지 본다. 검사가 항상 통과하는 껍데기가 아님을 보이는 것이 목적이다.
 """
 import copy
+import re
 import importlib.util
 import shutil
 import sys
@@ -98,16 +99,84 @@ def test_the_repository_render_passes_every_phase2_check(rendered):
     assert failures_from(p2.check_comparison_mode) == []
 
 
+KUSTOMIZATION = """images:
+  - name: parking-guardian/backend
+    newTag: "{backend}"
+  - name: parking-guardian/worker
+    newTag: {worker}
+"""
+
+
+def test_the_worker_tag_guard_rejects_unset_missing_and_placeholder_tags():
+    """The guard that stops a rebuild before the CI has built the worker image (or if its entry vanished). It must not depend on today's state."""
+    ok = KUSTOMIZATION.format(backend="abc1234", worker='"abc1234"')
+    assert p2.worker_tag_problem(ok) is None
+    assert p2.worker_tag_problem(KUSTOMIZATION.format(backend="abc1234", worker="abc1234")) is None      # unquoted is read too
+    assert "unset" in p2.worker_tag_problem(KUSTOMIZATION.format(backend="abc1234", worker='"unset"'))
+    assert "placeholder" in p2.worker_tag_problem(KUSTOMIZATION.format(backend="abc1234", worker='"placeholder"'))
+    assert "항목 없음" in p2.worker_tag_problem('images:\n  - name: parking-guardian/backend\n    newTag: "abc1234"\n')
+    assert "같은" in p2.worker_tag_problem(KUSTOMIZATION.format(backend="abc1234", worker='"def5678"'))   # half-finished CI run
+    # equal to the backend tag is not enough: two identical non-hash tags (nothing was built) must still be refused
+    assert p2.worker_tag_problem(KUSTOMIZATION.format(backend="placeholder", worker='"placeholder"')) is not None
+    assert p2.worker_tag_problem(KUSTOMIZATION.format(backend="unset", worker='"unset"')) is not None
+    assert p2.worker_tag_problem(KUSTOMIZATION.format(backend="abc1234", worker='"ABC1234"')) is not None   # not a lower-case commit hash
+
+
+def _prerequisites_for(monkeypatch, tmp_path, worker):
+    """Run prerequisites() against a copy of the repo's config files whose worker tag is `worker`; return the TODO lines it reports."""
+    app = tmp_path / "apps" / "parking-guardian"
+    app.mkdir(parents=True)
+    real = p2.REPO / "apps" / "parking-guardian"
+    (app / "config.env").write_text((real / "config.env").read_text(encoding="utf-8"), encoding="utf-8")
+    text = (real / "kustomization.yaml").read_text(encoding="utf-8")
+    text = re.sub(r"(- name: parking-guardian/worker\n\s+newTag: )\S+", lambda m: m.group(1) + worker, text)
+    (app / "kustomization.yaml").write_text(text, encoding="utf-8")
+    monkeypatch.setattr(p2, "REPO", tmp_path)
+    before = len(p2.warnings)
+    p2.prerequisites([])
+    new = p2.warnings[before:]
+    del p2.warnings[before:]
+    return new
+
+
+def test_prerequisites_report_an_unset_worker_tag_as_a_todo(monkeypatch, tmp_path):
+    new = _prerequisites_for(monkeypatch, tmp_path, '"unset"')
+    assert any("worker 태그" in line and "unset" in line for line in new), new
+
+
+def test_prerequisites_accept_a_real_worker_tag(monkeypatch, tmp_path):
+    tag = re.search(r"- name: parking-guardian/backend\s+newTag: \"?([0-9a-f]{7})", (p2.REPO / "apps" / "parking-guardian" / "kustomization.yaml").read_text(encoding="utf-8"))
+    assert tag, "the repository's backend tag should be a 7-character commit hash"
+    new = _prerequisites_for(monkeypatch, tmp_path, f'"{tag.group(1)}"')
+    assert not any("worker 태그" in line for line in new), new
+
+
+def test_strict_mode_fails_when_a_prerequisite_is_open_and_the_plain_run_does_not(monkeypatch):
+    """--strict is the pre-deploy gate: any open TODO must turn into exit code 1. Without it the same state is only a report."""
+    for name in ("check_phase1_still_there", "check_workloads", "check_keda", "check_references", "check_terraform_contract", "check_placement"):
+        monkeypatch.setattr(p2, name, lambda objs: None)
+    monkeypatch.setattr(p2, "check_argocd", lambda: None)
+    monkeypatch.setattr(p2, "check_comparison_mode", lambda: None)
+    monkeypatch.setattr(p2, "render", lambda: [])
+    monkeypatch.setattr(p2, "prerequisites", lambda objs: p2.todo(False, "open prerequisite (test)"))
+    for argv, expected in ((["check", "--strict"], 1), (["check"], 0)):
+        monkeypatch.setattr(sys, "argv", argv)
+        before_f, before_w = list(p2.failures), list(p2.warnings)
+        try:
+            assert p2.main() == expected, argv
+        finally:
+            p2.failures[:] = before_f
+            p2.warnings[:] = before_w
+
+
 @needs_kubectl
-def test_the_pre_deploy_todo_list_names_every_known_gap(rendered):
+def test_the_repositorys_own_todo_list_only_contains_known_gaps(rendered):
     before = len(p2.warnings)
     p2.prerequisites(rendered)
     new = p2.warnings[before:]
     del p2.warnings[before:]
-    text = "\n".join(new)
-    assert "worker 태그" in text                  # stays until the CI has built the first worker image and written its tag
-    known = ("worker 태그", "ECR 리포지토리 worker", "build-push", "KEDA operator", "SIGTERM", "preload")
-    assert all(any(k in line for k in known) for line in new), new   # nothing unexpected is reported
+    known = ("worker 태그", "ECR 리포지토리 worker", "build-push", "KEDA operator", "SIGTERM", "preload", "config.env")
+    assert all(any(k in line for k in known) for line in new), new      # nothing unexpected is reported; which items are open depends on the day
 
 
 # --- 결함 주입: 검사가 실제로 문제를 잡는다 --------------------------------------------------------------------------------------------
