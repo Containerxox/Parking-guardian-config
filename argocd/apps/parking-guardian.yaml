@@ -22,12 +22,24 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: parking-guardian
+  # worker Deployment 의 replicas 는 KEDA 가 정한다. Git 에는 처음 만들 때의 값 0 만 적혀 있다(apps/parking-guardian/worker-deployment.yaml).
+  # 이 항목이 없으면 selfHeal 이 KEDA 가 올린 개수를 0 으로 되돌려 처리 중인 Worker 를 죽인다.
+  #   - ignoreDifferences: diff 계산에서 제외 → 개수가 달라도 OutOfSync 가 아니고 selfHeal 도 일어나지 않는다.
+  #   - RespectIgnoreDifferences=true: sync 때도 제외 → 이미지 태그 변경 같은 sync 가 개수를 0 으로 덮어쓰지 않는다.
+  #     (Argo CD 문서: 리소스가 아직 없으면 원하는 상태를 그대로 적용한다 → 새 클러스터에서는 0 으로 태어난다.)
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      name: worker
+      jsonPointers:
+        - /spec/replicas
   syncPolicy:
     automated:
       prune: true    # Git 에서 지운 리소스는 클러스터에서도 지운다(해시 바뀐 옛 ConfigMap 정리 포함)
       selfHeal: true
     syncOptions:
       - CreateNamespace=false # Namespace 는 kustomization 의 namespace.yaml 이 만든다(Argo CD 가 따로 만들면 소유가 둘로 갈린다)
+      - RespectIgnoreDifferences=true # 위 ignoreDifferences 를 sync 에도 적용한다
     # 실패한 sync 는 기본적으로 같은 커밋에 다시 시도하지 않는다. PodMonitor 처럼 다른 앱(monitoring)의 CRD 에 의존하는 리소스가
     # 있어 CRD 가 생길 때까지 몇 번 재시도한다(30s → 1m → 2m → 4m → 5m).
     retry:
