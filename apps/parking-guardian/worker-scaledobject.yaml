@@ -34,12 +34,16 @@
 # TriggerAuthentication podIdentity.provider: aws, roleArn 없음 → KEDA operator 의 기본 AWS 자격 증명 체인을 쓴다(KEDA 소스 aws_config_cache.go:
 # UsingPodIdentity 이고 AwsRoleArn 이 비면 LoadDefaultConfig 의 자격 증명을 유지). EKS Pod Identity 는 operator Pod 에
 # AWS_CONTAINER_CREDENTIALS_FULL_URI 를 주입하고 Go SDK 의 기본 체인이 읽는다.
-# **전제(아직 없음)**: ServiceAccount keda/keda-operator 에 IAM 역할(sqs:GetQueueAttributes, 본 큐)을 Pod Identity 로 연결해야 한다 → docs/phase2.md 2절.
+# **전제**: ServiceAccount keda/keda-operator 에 IAM 역할(sqs:GetQueueAttributes, 본 큐)이 Pod Identity 로 연결돼 있어야 한다(infra cluster 스택 iam_keda.tf).
+# 2026-11-04 첫 AWS 배포에서 이 연결이 있는 상태로 operator 가 떴고, ScaledObject 는 Ready=True 였다(0→1→0 확장 확인: docs/e2e-aws-first-run-2026-11-04.md).
 #
 # --- 적용 순서 ---------------------------------------------------------------------------------------------------------
 # CRD(ScaledObject, TriggerAuthentication)는 keda 앱(argocd/apps/keda.yaml)이 설치한다. 그 전에 이 파일이 적용되면 "kind 없음" 으로 실패하므로
 # SkipDryRunOnMissingResource 로 dry-run 을 건너뛰고, parking-guardian Application 의 retry 가 CRD 가 생길 때까지 재시도한다(PodMonitor 와 같은 방식).
-# sync-wave 5: 대상 Deployment(wave 4)보다 뒤.
+# sync-wave 5: 대상 Deployment(wave 4)보다 뒤. **앞으로 옮기면 안 된다**: 대상이 없는 ScaledObject 는 KEDA 가 Ready=False(ScaledObjectCheckFailed)로 두고
+#   (KEDA 는 Deployment 를 watch 하지 않아 대상이 생겨도 바로 다시 보지 않는다), Argo CD 의 ScaledObject 헬스 검사는 Ready=False 를 Degraded 로 판정해
+#   그 wave 가 끝나기를 기다리는 다음 wave(worker, 4)를 막는다(순환). 첫 배포 교착(worker 가 기본 replicas 1 로 Pending)은 wave 가 아니라
+#   worker-deployment.yaml 의 replicas: 0 과 Application 의 ignoreDifferences 로 푼다 → docs/phase2.md 8.8.
 #
 # --- 일시 정지(S5 의 "Worker 0개" 실험 등) -------------------------------------------------------------------------------------
 # 손으로 replicas 를 바꿔도 KEDA 가 되돌린다. S5 의 "Worker 0개" 실험은 정지 어노테이션을 쓴다(Argo CD 자동 동기화를 먼저 멈춘다):

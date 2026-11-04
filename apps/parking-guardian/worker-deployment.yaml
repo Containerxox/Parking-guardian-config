@@ -25,7 +25,14 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "4" # 마이그레이션(1) 뒤, HPA(3) 뒤. 이미지가 없어도 Phase 1 의 HPA 적용을 막지 않는다
 spec:
-  # replicas 없음: KEDA(worker-scaledobject.yaml)가 만든 HPA 가 정한다. 여기 값을 두면 Argo CD selfHeal 이 KEDA 의 결정을 되돌린다.
+  # replicas: 0 은 "처음 만들 때 한 번만" 의미가 있다. 이후 개수는 KEDA(worker-scaledobject.yaml)가 만든 HPA 가 정한다.
+  #   왜 필요한가 (2026-11-04 첫 AWS 배포의 교착): 이 필드가 없으면 Deployment 가 기본값 1 로 만들어진다. 노드에 1000m 자리가 없으면 Pod 가 Pending →
+  #   Argo CD 가 wave 4 를 Healthy 로 보지 않아 wave 5 의 ScaledObject 가 만들어지지 않고, ScaledObject 가 없으니 KEDA 가 0 으로 내릴 수도 없다(순환).
+  #   0 으로 만들면 곧바로 Healthy 이고, 큐에 메시지가 있으면 ScaledObject 가 생긴 뒤 KEDA 가 올린다.
+  #   ScaledObject 를 대상보다 앞 wave 로 옮기는 해결안은 안 된다: 대상이 없으면 KEDA 가 Ready=False 로 두고 Argo CD 가 Degraded 로 보아 wave 4 를 막는다.
+  #   !! 짝: argocd/apps/parking-guardian.yaml 의 ignoreDifferences(/spec/replicas) + RespectIgnoreDifferences=true !!
+  #   이 둘이 없으면 selfHeal 이 KEDA 가 올린 개수를 0 으로 되돌려 처리 중인 Worker 를 죽인다. scripts/check-phase2-render.py 가 둘의 짝을 검사한다.
+  replicas: 0
 
   # 롤링: 먼저 내리고 새로 띄운다(maxSurge 0, maxUnavailable 1). Worker 는 요청 1000m 라 노드 3대(노드당 1280m)에서 surge Pod 가 들어갈 자리가 없다.
   #   Worker 가 잠시 없어도 서비스는 끊기지 않는다: 접수 API 는 큐에 쌓고(202), 판정만 지연된다. 내려가는 Worker 가 처리 중이던 메시지는 60초 뒤 다시 온다.

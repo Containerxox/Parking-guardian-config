@@ -228,6 +228,78 @@ def test_replicas_on_a_scaled_deployment_are_caught(rendered):
     assert any("replicas 가 적혀 있다" in p for p in p2.hpa_conflicts(objs))
 
 
+# --- 첫 배포 교착 방지 (2026-11-04) -----------------------------------------------------------------------------------------
+# 사건: worker Deployment 에 replicas 가 없어 기본값 1 로 만들어졌고, 노드에 1000m 자리가 없어 Pending → wave 4 가 Healthy 가 되지 않아
+# wave 5 의 ScaledObject 가 만들어지지 않았다. 해결: replicas: 0 으로 만들고, Application 이 /spec/replicas 를 무시해 KEDA 의 결정을 되돌리지 않게 한다.
+
+def _app_without(drop):
+    """parking-guardian Application 의 복사본에서 drop(spec) 이 지정한 부분을 뺀다."""
+    app = copy.deepcopy(p2.parking_guardian_app())
+    drop(app["spec"])
+    return app
+
+
+def test_the_worker_is_born_idle_and_the_application_ignores_its_replicas(rendered):
+    app = p2.parking_guardian_app()
+    assert _dep(rendered, "worker")["spec"]["replicas"] == 0
+    assert p2.scaled_target_problems(rendered, app) == []
+    assert p2.hpa_conflicts(rendered, app) == []
+
+
+def test_a_worker_without_replicas_brings_the_first_deploy_deadlock_back(rendered):
+    objs = copy.deepcopy(rendered)
+    del _dep(objs, "worker")["spec"]["replicas"]          # 옛 상태: 기본값 1 로 만들어진다
+    problems = p2.scaled_target_problems(objs, p2.parking_guardian_app())
+    assert any("replicas: 0 으로 시작하지 않는다" in p and "Pending" in p for p in problems)
+
+
+def test_replicas_zero_without_ignore_differences_is_caught(rendered):
+    app = _app_without(lambda spec: spec.pop("ignoreDifferences"))
+    assert any("ignoreDifferences" in p for p in p2.scaled_target_problems(rendered, app))
+    # 무시 설정이 없으면 0 도 허용되지 않는다: selfHeal 이 KEDA 가 올린 개수를 0 으로 되돌린다
+    assert any("replicas 가 적혀 있다" in p for p in p2.hpa_conflicts(rendered, app))
+
+
+def test_ignore_differences_without_respect_ignore_differences_is_caught(rendered):
+    app = _app_without(lambda spec: spec["syncPolicy"]["syncOptions"].remove("RespectIgnoreDifferences=true"))
+    assert any("RespectIgnoreDifferences" in p for p in p2.scaled_target_problems(rendered, app))
+    assert any("replicas 가 적혀 있다" in p for p in p2.hpa_conflicts(rendered, app))
+
+
+def test_ignoring_the_replicas_of_another_deployment_does_not_count(rendered):
+    def retarget(spec):
+        spec["ignoreDifferences"][0]["name"] = "backend"
+    app = _app_without(retarget)
+    assert any("ignoreDifferences" in p for p in p2.scaled_target_problems(rendered, app))
+
+
+def test_a_pointer_other_than_spec_replicas_does_not_count(rendered):
+    def wrong_pointer(spec):
+        spec["ignoreDifferences"][0]["jsonPointers"] = ["/spec/template"]
+    app = _app_without(wrong_pointer)
+    assert any("/spec/replicas" in p for p in p2.scaled_target_problems(rendered, app))
+
+
+def test_only_replicas_zero_is_allowed_and_only_on_a_keda_target(rendered):
+    app = p2.parking_guardian_app()
+    objs = copy.deepcopy(rendered)
+    _dep(objs, "worker")["spec"]["replicas"] = 2                      # 0 이 아닌 값은 무시 설정이 있어도 안 된다
+    assert any("replicas 가 적혀 있다" in p for p in p2.hpa_conflicts(objs, app))
+    objs = copy.deepcopy(rendered)
+    _dep(objs, "backend")["spec"]["replicas"] = 0                     # backend 는 CPU 기반 HPA 의 대상이지 KEDA 대상이 아니다
+    assert any("Deployment backend" in p for p in p2.hpa_conflicts(objs, app))
+
+
+def test_a_scaled_object_before_its_target_is_rejected_because_it_deadlocks(rendered):
+    """ScaledObject 를 대상보다 앞 wave(3)로 옮기는 해결안은 안 된다: 대상이 없으면 KEDA 가 Ready=False → Argo CD 가 Degraded 로 보고 wave 를 막는다."""
+    objs = copy.deepcopy(rendered)
+    for o in objs:
+        if o["kind"] in ("ScaledObject", "TriggerAuthentication"):
+            o["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] = "3"
+    problems = p2.wave_problems(objs)
+    assert any("ScaledObject worker" in p and "Degraded" in p for p in problems)
+
+
 def test_a_worker_that_starts_before_the_migration_is_caught(rendered):
     objs = copy.deepcopy(rendered)
     _dep(objs, "worker")["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] = "1"

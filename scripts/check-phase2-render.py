@@ -12,7 +12,8 @@ Windows 콘솔(cp949)에서는 PYTHONUTF8=1 을 준다.
   3. Worker·Relay 는 Service·Ingress 가 없고 Secret 은 pipeline-secrets(DB 계정 2개)뿐이다
   4. ServiceAccount·Namespace 이름이 infra Terraform 의 Pod Identity 변수 기본값과 같다
   5. 모든 ConfigMap / Secret / ServiceAccount 참조가 렌더링 결과 안에 있고 키가 있다
-  6. KEDA: ScaledObject 대상·인증·큐 URL, backend HPA 와의 충돌 없음, sync-wave 순서, Argo CD 앱 의존성, 차트 버전의 Kubernetes 호환
+  6. KEDA: ScaledObject 대상·인증·큐 URL, backend HPA 와의 충돌 없음, sync-wave 순서, Argo CD 앱 의존성, 차트 버전의 Kubernetes 호환,
+     첫 배포 교착 방지(worker 는 replicas: 0 으로 만들어지고 Application 이 /spec/replicas 를 무시한다)
   7. 노드 배치 계산(요청 기준): 공존 구성에서 Worker 가 몇 개까지 들어가는가
   8. 배포 전에 아직 없는 것(ECR worker 리포지토리, KEDA Pod Identity, CI 의 worker 빌드, worker 이미지 태그)
 """
@@ -148,7 +149,9 @@ def wave_problems(objs: list[dict]) -> list[str]:
         if target is None:
             problems.append(f"ScaledObject {so['metadata']['name']} 의 대상 Deployment 가 없다")
         elif wave(so) <= wave(target):
-            problems.append(f"ScaledObject {so['metadata']['name']} (wave {wave(so)}) 은 대상 {target['metadata']['name']} (wave {wave(target)}) 보다 뒤여야 한다")
+            problems.append(f"ScaledObject {so['metadata']['name']} (wave {wave(so)}) 은 대상 {target['metadata']['name']} (wave {wave(target)}) 보다 뒤여야 한다: "
+                            "대상이 아직 없으면 KEDA 가 Ready=False 로 두고(Deployment 를 watch 하지 않아 생겨도 바로 다시 보지 않는다) "
+                            "Argo CD 는 이를 Degraded 로 보아 대상이 있는 wave 를 막는다(순환)")
     # 기존 Phase 1 규칙 + Phase 2: HPA 가 worker/relay 의 wave 에 막히지 않아야 한다(worker 이미지가 없어도 HPA 가 적용된다)
     phase2_blocker = [n for n in ("worker", "relay") if (("Deployment", n) in by) and
                       any(wave(h) >= wave(by[("Deployment", n)]) for h in objs if h["kind"] == "HorizontalPodAutoscaler")]
@@ -156,18 +159,59 @@ def wave_problems(objs: list[dict]) -> list[str]:
     return problems
 
 
-def hpa_conflicts(objs: list[dict]) -> list[str]:
-    """한 Deployment 를 두 오토스케일러가 건드리면 서로 되돌린다. KEDA 가 만든 HPA 는 렌더링 결과에 없다(런타임에 생긴다)."""
+def ignored_replicas_problems(app: dict | None, name: str) -> list[str]:
+    """Application 이 Deployment <name> 의 /spec/replicas 를 diff 에서도 sync 에서도 무시하는가. 빠진 것을 하나씩 돌려준다."""
+    if not app:
+        return [f"Application 이 없어 {name} 의 replicas 무시 설정을 확인할 수 없다"]
+    spec = app.get("spec", {})
+    problems = []
+    covers = any(e.get("group") == "apps" and e.get("kind") == "Deployment" and e.get("name", name) == name
+                 and "/spec/replicas" in (e.get("jsonPointers") or []) for e in spec.get("ignoreDifferences") or [])
+    if not covers:
+        problems.append(f"Application 의 ignoreDifferences 에 apps/Deployment {name} 의 /spec/replicas 가 없다 — KEDA 가 올린 개수를 selfHeal 이 0 으로 되돌린다")
+    if "RespectIgnoreDifferences=true" not in (spec.get("syncPolicy", {}).get("syncOptions") or []):
+        problems.append("Application 의 syncOptions 에 RespectIgnoreDifferences=true 가 없다 — ignoreDifferences 가 diff 에만 쓰이고 sync 는 개수를 덮어쓴다")
+    return problems
+
+
+def hpa_conflicts(objs: list[dict], app: dict | None = None) -> list[str]:
+    """한 Deployment 를 두 오토스케일러가 건드리면 서로 되돌린다. KEDA 가 만든 HPA 는 렌더링 결과에 없다(런타임에 생긴다).
+
+    replicas 는 적혀 있으면 안 된다. 단 하나의 예외: ScaledObject 의 대상이 replicas: 0(처음 만들 때의 값)이고 `app` 이 그 필드를 무시하는 경우."""
     targets: dict[str, list[str]] = {}
+    scaled: set[str] = set()
     for o in objs:
         if o["kind"] == "HorizontalPodAutoscaler":
             targets.setdefault(o["spec"]["scaleTargetRef"]["name"], []).append(f"HPA {o['metadata']['name']}")
         if o["kind"] == "ScaledObject":
+            scaled.add(o["spec"]["scaleTargetRef"]["name"])
             targets.setdefault(o["spec"]["scaleTargetRef"]["name"], []).append(f"ScaledObject {o['metadata']['name']}")
     problems = [f"{name} 를 {len(who)}개가 조절한다: {who}" for name, who in targets.items() if len(who) > 1]
     for o in objs:
-        if o["kind"] == "Deployment" and o["metadata"]["name"] in targets and "replicas" in o["spec"]:
-            problems.append(f"Deployment {o['metadata']['name']} 에 replicas 가 적혀 있다 — 오토스케일러의 결정을 selfHeal 이 되돌린다")
+        name = o["metadata"]["name"]
+        if o["kind"] == "Deployment" and name in targets and "replicas" in o["spec"]:
+            if name in scaled and o["spec"]["replicas"] == 0 and not ignored_replicas_problems(app, name):
+                continue   # 처음 만들 때만 0, 이후는 KEDA — Application 이 이 필드를 무시한다
+            problems.append(f"Deployment {name} 에 replicas 가 적혀 있다 — 오토스케일러의 결정을 selfHeal 이 되돌린다")
+    return problems
+
+
+def scaled_target_problems(objs: list[dict], app: dict | None) -> list[str]:
+    """첫 배포 교착 방지(2026-11-04): ScaledObject 의 대상은 replicas: 0 으로 '태어나야' 하고 Application 이 그 필드를 무시해야 한다.
+
+    replicas 가 없으면 Deployment 는 기본값 1 로 만들어진다. 노드에 자리가 없으면 Pending → 대상의 wave 가 Healthy 가 되지 않아
+    그보다 뒤 wave 의 ScaledObject 가 만들어지지 않고, KEDA 가 0 으로 내릴 길이 막힌다."""
+    by = index(objs)
+    problems = []
+    for so in (o for o in objs if o["kind"] == "ScaledObject"):
+        name = so["spec"]["scaleTargetRef"]["name"]
+        dep = by.get(("Deployment", name))
+        if dep is None:
+            continue   # wave_problems 가 보고한다
+        if dep["spec"].get("replicas") != 0:
+            problems.append(f"Deployment {name} 이 replicas: 0 으로 시작하지 않는다(실제 {dep['spec'].get('replicas', '없음→기본 1')}): 자리가 없으면 Pending → "
+                            f"wave {wave(dep)} 가 Healthy 가 안 되어 ScaledObject (wave {wave(so)}) 가 만들어지지 않는 교착이 난다")
+        problems += ignored_replicas_problems(app, name)
     return problems
 
 
@@ -283,7 +327,8 @@ def check_workloads(objs: list[dict]) -> None:
     check(wspec["terminationGracePeriodSeconds"] >= 60, f"종료 유예 ≥ 60초 (= SQS visibility 60초 ≥ lease 55초) — 실제 {wspec['terminationGracePeriodSeconds']}")
     check([c["name"] for c in wspec.get("initContainers", [])] == ["fetch-models"] and any(v["name"] == "models" for v in wspec["volumes"]),
           "initContainer fetch-models 와 모델 emptyDir 이 있다")
-    check(not any(k in wdep["spec"] for k in ("replicas",)), "Worker Deployment 에 replicas 를 적지 않는다 (KEDA 가 정한다)")
+    check(wdep["spec"].get("replicas") == 0,
+          "Worker Deployment 의 replicas 는 0 하나뿐이다 (처음 만들 때만. 이후는 KEDA 가 정하고 Application 이 이 필드를 무시한다 — 첫 배포 교착 방지)")
     check(wdep["spec"]["strategy"]["rollingUpdate"] == {"maxSurge": 0, "maxUnavailable": 1}, "롤링은 먼저 내리고 띄운다 (maxSurge 0 — surge 자리가 없다)")
     check("livenessProbe" not in worker and "readinessProbe" not in worker, "probe 가 없다 (HTTP 서버가 없는 CLI 프로세스. 위험 R3)")
     check(("Service", "worker") not in by and ("Ingress", "worker") not in by, "Worker 에 Service·Ingress 가 없다")
@@ -325,8 +370,11 @@ def check_keda(objs: list[dict]) -> None:
     check(s["advanced"]["horizontalPodAutoscalerConfig"]["behavior"]["scaleDown"]["stabilizationWindowSeconds"] == 300, "축소 안정화 300초 (모델 재다운로드 비용)")
     anns = so["metadata"]["annotations"]
     check("SkipDryRunOnMissingResource=true" in anns["argocd.argoproj.io/sync-options"], "CRD 가 아직 없어도 dry-run 을 건너뛴다 (Application retry 가 재시도)")
-    problems = hpa_conflicts(objs)
+    app = parking_guardian_app()
+    problems = hpa_conflicts(objs, app)
     check(not problems, "backend HPA / inference HPA 와 KEDA 의 대상이 겹치지 않고 replicas 충돌이 없다" + (f" — {problems}" if problems else ""))
+    problems = scaled_target_problems(objs, app)
+    check(not problems, "첫 배포 교착 방지: worker 는 replicas: 0 으로 만들어지고 Application 이 /spec/replicas 를 무시한다(diff·sync 모두)" + (f" — {problems}" if problems else ""))
     problems = wave_problems(objs)
     check(not problems, "sync-wave 순서: 마이그레이션(1) < worker·relay(4) < ScaledObject(5), HPA(3) 는 worker 에 막히지 않는다" + (f" — {problems}" if problems else ""))
     problems = render_check.hpa_wave_problems(objs)
@@ -360,6 +408,11 @@ def check_terraform_contract(objs: list[dict]) -> None:
     check(iam2.exists() and "aws_eks_pod_identity_association\" \"worker\"" in iam2.read_text(encoding="utf-8") and
           "aws_eks_pod_identity_association\" \"relay\"" in iam2.read_text(encoding="utf-8"),
           "Terraform 에 worker·relay Pod Identity 연결이 정의되어 있다 (cluster 스택 apply 는 재구축 때)")
+
+
+def parking_guardian_app() -> dict:
+    """argocd/apps/parking-guardian.yaml (Application). replicas 무시 설정과 retry 를 여기서 읽는다."""
+    return yaml.safe_load((REPO / "argocd" / "apps" / "parking-guardian.yaml").read_text(encoding="utf-8"))
 
 
 def check_argocd() -> None:
@@ -472,7 +525,7 @@ def check_comparison_mode() -> None:
     check((so["minReplicaCount"], so["maxReplicaCount"]) == (1, 3), f"Worker 최소 1 / 최대 3 — 실제 {so['minReplicaCount']} / {so['maxReplicaCount']}")
     check(all(k in by for k in (("Deployment", "backend"), ("Deployment", "worker"), ("Deployment", "relay"), ("Ingress", "parking-guardian"))),
           "backend·worker·relay·Ingress 는 그대로다")
-    problems = reference_problems(objs) + hpa_conflicts(objs)
+    problems = reference_problems(objs) + hpa_conflicts(objs, parking_guardian_app()) + scaled_target_problems(objs, parking_guardian_app())
     check(not problems, "참조 관계와 오토스케일러 충돌에 문제가 없다" + (f" — {problems}" if problems else ""))
 
 
