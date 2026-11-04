@@ -1,5 +1,7 @@
 # Phase 1 ↔ Phase 2 부하 테스트 계획 (초안, 2026-11-04 — 아직 실행하지 않았다)
 
+**실행 가능한 절차·비용·정리: [loadtest-execution-plan-2026-11-04.md](loadtest-execution-plan-2026-11-04.md), [cost-and-teardown-plan-2026-11-04.md](cost-and-teardown-plan-2026-11-04.md).** 이 문서는 가설과 지표를 담고, 위 문서가 구체화한다.
+
 **이 문서는 계획이다. 부하 테스트를 실행하지 않았고, 아래 시나리오의 결과는 없다.** 표기: **[관찰]** 이 저장소·클러스터·기록에서 직접 읽은 사실, **[계산]** 관찰값으로 계산,
 **[추정]** 근거 있는 해석(미확인). Phase 1 측정의 사전 등록 규칙은 앱 리포 `docs/measurements/phase1/README.md`, 도구는 `loadtest/` 이며, 이 계획은 그 틀을 그대로 이어 쓴다
 (가설과 통과 기준을 결과를 보기 전에 고정, 불리한 결과도 기록).
@@ -98,7 +100,7 @@ Phase 1 은 접수 요청 안에서 AI 판정까지 끝내는 **동기식**(ADR 
 | Phase 2 용 k6 시나리오(`/device/detection-jobs`, 세션·seq·event_id 관리) | **미작성** — 새 코드와 로컬 검증 필요 |
 | 접수→판정 지연 수집 쿼리·CloudWatch SQS 지표 수집 도구 | 미작성(DB 쿼리는 쉬움) |
 | R6(회전 시각 확인 또는 자동화), R3(정지 감지), R7(구성 선택) | [ops-risks-2026-11-04.md](ops-risks-2026-11-04.md) |
-| DNS 연결 또는 k6 `hosts` 설정, 부하 발생 위치 확정 | [dns-admin-ui-plan.md](dns-admin-ui-plan.md) |
+| DNS 연결 또는 k6 `hosts` 설정, 부하 발생 위치 확정 | **DNS 연결 완료**(2026-11-04), ALB 는 내 IP `/32` 만 허용 — 같은 PC 에서 실행하면 통과. [e2e-admin-ui-2026-11-04.md](e2e-admin-ui-2026-11-04.md) |
 | 이미지 캐시 워밍업 절차 | 정의 필요 |
 | 시험 데이터 정리 방침(삭제 금지 규칙과의 조정) | 사용자 결정 |
 | 각 회차 전후 기준선 비교(해시) | 도구 있음(`verify_e2e.py` 방식) |

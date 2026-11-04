@@ -1,18 +1,20 @@
 # DNS 연결과 관리자 UI 검증 계획 (사전 점검 결과, 2026-11-04)
 
-**DNS 레코드는 적용하지 않았다.** 이 문서는 읽기 전용 점검(AWS 조회, `terraform plan`, DNS 없이 하는 공개 GET)의 결과와 적용·검증 계획이다.
+**후속 (2026-11-04): ALB IP 제한(7장), DNS 레코드 생성, 사용자 브라우저 UI 시험이 모두 끝났다 — 결과는 [e2e-admin-ui-2026-11-04.md](e2e-admin-ui-2026-11-04.md).** 아래 1~6장은 **적용 전**의 점검 기록으로 남겨 둔다(현재 상태와 다른 표현은 "적용 전" 기준).
+
+**(적용 전 기록) DNS 레코드는 적용하지 않았다.** 이 문서는 읽기 전용 점검(AWS 조회, `terraform plan`, DNS 없이 하는 공개 GET)의 결과와 적용·검증 계획이다.
 앱 도메인은 이 문서에 쓰지 않고 `APP_HOST`(= `config.env` 의 값)로 적는다. 계정·호스티드 존·ALB 이름도 적지 않는다. 표기: **[관찰]** 직접 확인, **[추정]** 해석, **[미확인]** 확인하지 못함.
 
 ## 1. 사전 점검 결과
 
 | 항목 | 상태 | 구분 |
 |---|---|---|
-| Route 53 호스티드 존 | 공개 존, 레코드 3개(NS, SOA, ACM 검증용 CNAME). **`APP_HOST` 의 A 레코드는 아직 없음**(`Could not resolve host`) | [관찰] |
+| Route 53 호스티드 존 | 공개 존, 레코드 3개(NS, SOA, ACM 검증용 CNAME). **`APP_HOST` 의 A 레코드는 (적용 전) 없었음**(`Could not resolve host`) — 현재는 생성됨 | [관찰] |
 | ACM 인증서 | `APP_HOST` 용, **ISSUED**, 만료 2027-05-13, 검증 SUCCESS, **ALB 가 사용 중**. ALB 가 내놓는 인증서의 주체가 `APP_HOST` | [관찰] |
 | ALB | internet-facing, active. 리스너 80(→ 443 으로 리다이렉트), 443(HTTPS, `ELBSecurityPolicy-TLS13-1-2-2021-06`, 기본 동작 = 고정 응답 404) | [관찰] |
 | 호스트 기반 규칙 | 우선순위 1: Host=`APP_HOST` **그리고** 경로 `/api`·`/api/*` → backend 대상 그룹(5000, `/readyz`). 우선순위 2: Host=`APP_HOST` 그리고 `/*` → frontend 대상 그룹(8080, `/healthz`). 둘 다 대상 healthy | [관찰] |
 | ALB 보안 그룹 | 80·443 이 **사용자 공인 IP `/32` 하나로만 제한**되어 있다(2026-11-04 network 스택 apply, `0.0.0.0/0` 규칙 제거). `alb_ingress_cidrs` 는 기본값 없는 필수 변수이고 `terraform.tfvars` 에 CIDR 을 명시해야 한다. 재 plan `No changes` — 자세한 내용은 7장 | [관찰] |
-| `dns-record` Terraform 스택 | `terraform plan`: **1 add, 0 change, 0 destroy** — `APP_HOST` 의 **A 별칭 레코드** 하나(ALB 로, `evaluate_target_health = true`). 상태에는 아직 아무것도 없음 | [관찰] |
+| `dns-record` Terraform 스택 | `terraform plan`: **1 add, 0 change, 0 destroy** — `APP_HOST` 의 **A 별칭 레코드** 하나(ALB 로, `evaluate_target_health = true`). 상태에는 (적용 전) 아무것도 없었음 — 현재는 apply 완료(1 add), 재 plan `No changes` | [관찰] |
 
 ### DNS 없이 같은 경로를 읽기 전용으로 확인 (`curl --connect-to`: ALB 이름으로 접속하되 인증서는 `APP_HOST` 로 검증)
 | 요청 | 결과 | 뜻 |
