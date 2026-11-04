@@ -5,7 +5,7 @@
 # parking-guardian 앱이 하는 일: ScaledObject 와 TriggerAuthentication(worker-scaledobject.yaml). 그쪽은 CRD 가 생길 때까지 retry 한다.
 #
 # 적용 순서 의존성 (실패하지 않게):
-#   1) infra: Pod Identity 연결 keda/keda-operator ↔ IAM 역할 (SQS GetQueueAttributes) — **아직 없음**. 없이 KEDA 가 뜨면 operator 에 AWS 자격 증명이
+#   1) infra: Pod Identity 연결 keda/keda-operator ↔ IAM 역할 (SQS GetQueueAttributes) — cluster 스택이 만든다(2026-11-04 적용 확인). 없이 KEDA 가 뜨면 operator 에 AWS 자격 증명이
 #      주입되지 않아 ScaledObject 가 "Unable to locate credentials" 로 Ready 가 안 된다(fallback 으로 Worker 는 1개 유지). 연결을 만든 뒤 operator 를 재시작한다.
 #   2) 이 앱(CRD) → 3) parking-guardian 앱의 ScaledObject(sync-wave 5, SkipDryRunOnMissingResource, Application retry).
 # 삭제 순서: **parking-guardian 앱 → keda 앱**. ScaledObject 에 KEDA 의 finalizer 가 있어서 KEDA 를 먼저 지우면 ScaledObject 가 영원히 지워지지 않는다.

@@ -1,7 +1,9 @@
 # Phase 2 배포 구성 (Worker · Relay · KEDA)
 
-Phase 2 는 접수와 AI 판별을 큐로 떼어 낸다(앱 리포 ADR 0019). 이 문서는 그 배포 구성을 정리한다. 2026-11-03 기준, **로컬 렌더링과 계약 검증까지만 했고
-클러스터에는 배포하지 않았다.** 계정 ID·도메인 같은 식별자는 이 문서에 쓰지 않는다(`config.env` 에만 있다).
+Phase 2 는 접수와 AI 판별을 큐로 떼어 낸다(앱 리포 ADR 0019). 이 문서는 그 배포 구성을 정리한다. 2026-11-03 기준으로 로컬 렌더링과 계약 검증까지 했고,
+**2026-11-04 에 AWS(EKS)에 처음 배포해 정상 경로 E2E 1건을 확인했다** → [docs/e2e-aws-first-run-2026-11-04.md](e2e-aws-first-run-2026-11-04.md)
+(단일 실행이라 일반적인 성능으로 읽지 않는다). 운영 절차: [RDS 비밀번호 회전 런북](runbook-rds-rotation.md), [테스트 장비 사용 절차](test-device-procedure.md).
+계정 ID·도메인 같은 식별자는 이 문서에 쓰지 않는다(`config.env` 에만 있다).
 
 검증: `python scripts/check-phase2-render.py` (Windows 콘솔은 `PYTHONUTF8=1`). 배포 직전에는 `--strict` 로 아래 2절이 모두 끝났는지 본다.
 
@@ -178,8 +180,8 @@ min 0 구성의 **감지 방법**: 배포 뒤 `kubectl -n parking-guardian get s
 | wave 1 | `backend-migrate` Job (새 스키마) | |
 | wave 2 | backend, inference, frontend | |
 | wave 3 | HPA (backend, inference) | worker 보다 **앞**: worker 가 Healthy 가 아니어도 Phase 1 HPA 가 적용된다 |
-| wave 4 | **worker, relay** | 마이그레이션(1) 뒤 |
-| wave 5 | **ScaledObject, TriggerAuthentication** | CRD 가 아직 없으면 `SkipDryRunOnMissingResource` + Application `retry`(PodMonitor 와 같은 방식) |
+| wave 4 | **worker, relay** | 마이그레이션(1) 뒤. worker 는 **`replicas: 0` 으로 만들어진다**(첫 배포 교착 방지, 8.8) |
+| wave 5 | **ScaledObject, TriggerAuthentication** | CRD 가 아직 없으면 `SkipDryRunOnMissingResource` + Application `retry`(PodMonitor 와 같은 방식). **대상(worker)보다 앞 wave 로 옮기면 안 된다**(8.8) |
 
 **삭제 순서**: root → **parking-guardian → keda** → monitoring … → platform. ScaledObject 에 KEDA 의 finalizer 가 있어 KEDA 를 먼저 지우면 ScaledObject 가 영원히 남는다.
 
@@ -253,6 +255,12 @@ KEDA 의 실제 스케일(0→1, 1→N)과 fallback 동작, Pod Identity 동작,
 
 권고: 지금은 A 를 운영 절차에 적고(롤링은 maxSurge 규칙을 따른다: Worker 는 먼저 내리고 띄운다), 운영 직전에 B 를 승인받는다.
 
+**2026-11-04 실제로 발생했다 [관찰]**: RDS 를 시작한 약 45분 뒤(시작 03:38 UTC, 이벤트 `Reset master credentials` 04:23:59 UTC) 관리형 비밀이 회전했다.
+회전이 이 시점에 일어난 이유(7일 주기의 예정 시각인지, 중지 기간의 영향인지)는 확인하지 못했다. 그 사이 ExternalSecret 은 04:17 에 동기화돼 있었고
+(갱신 주기 1시간), Argo CD 의 재시도로 다시 만들어진 마이그레이션 Job 이 옛 비밀번호로 `password authentication failed` 가 되어 `parking-guardian` 앱이 멈췄다.
+ExternalSecret 강제 갱신(`force-sync` 어노테이션) 뒤 같은 재시도가 성공했고, backend·relay 는 롤링 재시작으로 새 비밀번호를 받았다.
+이 절차는 **[runbook-rds-rotation.md](runbook-rds-rotation.md)** 에 정리했다. 해결안 A(절차)만 문서화했고 B(Reloader)·갱신 주기 변경·로테이션 설정 변경은 하지 않았다.
+
 ### 8.5 프로세스는 멈췄는데 컨테이너는 살아 있는 경우 (R3)
 
 원인 후보: DB 쿼리 무한 대기(statement timeout 없음), 데드락, 네트워크 소켓 무응답. 지금은 kubelet 이 못 잡는다(HTTP 서버·probe 없음). 메시지는 lease·visibility 로 다른 Worker 에게 넘어가지만 멈춘 Pod 가 남고, Worker 가 하나뿐이면 판정이 멈춘다.
@@ -274,3 +282,42 @@ KEDA 2.21 의 시험된 Kubernetes 범위 v1.34~v1.36 안에 1.35 가 들어간�
 
 - scale-to-zero: 지원된다. `minReplicaCount: 0` 이고 `idleReplicaCount` 를 쓰지 않으면 KEDA 가 0↔1 을, HPA 가 1→N 을 맡는다. 0→1 은 폴링(15초)마다 활성 여부를 보고 즉시 올린다(`activationQueueLength` 기본 0). `cooldownPeriod: 300` 은 0 으로 줄일 때만 쓰인다. (문서 확인. 실제 클러스터 동작은 미확인)
 - fallback: aws-sqs-queue(AverageValue)에서 지원된다. 그러나 **KEDA 소스상 Worker 가 0개일 때 오류가 나면 0→1 로 올리지 못한다**(RequestScale 이 로그만 남김). 이미 떠 있는 Worker 를 0 으로 줄이는 것만 막는다. 공식 문서는 이 상호작용을 설명하지 않는다 → R13, 4절.
+
+### 8.8 첫 배포 교착: worker 가 기본 replicas 1 로 만들어지는 문제 (2026-11-04 실제 발생)
+
+**현상 [관찰]**: 새 클러스터에 처음 배포하자 worker Deployment 가 `replicas` 없이(=기본 1) 만들어졌다. 노드에 1000m 자리가 없어 Pod 가 `Insufficient cpu` 로 Pending →
+Argo CD 가 wave 4 를 Healthy 로 보지 않아 `parking-guardian` 앱이 `waiting for healthy state of Deployment/worker` 에서 멈췄고, wave 5 의 ScaledObject 가
+만들어지지 않았다. ScaledObject 가 없으니 KEDA 가 worker 를 0 으로 내릴 수도 없었다(순환). 그날은 `kubectl scale deployment worker --replicas=0` 으로 한 번 풀었다.
+
+**"ScaledObject 를 wave 3 으로 옮기면 되는가" → 안 된다. 근거 (소스·문서로 확인, 클러스터에서 실험하지는 않았다)**
+
+| 확인 | 결과 | 출처 |
+|---|---|---|
+| 대상이 없는 ScaledObject 를 KEDA 가 어떻게 두는가 | `Ready=False`(`ScaledObjectCheckFailed`)로 두고 오류를 반환한다 | KEDA `controllers/keda/scaledobject_controller.go` |
+| 대상이 나중에 생기면 바로 다시 보는가 | 아니다. 컨트롤러는 ScaledObject·HPA 만 watch 하고 Deployment 는 watch 하지 않는다. 오류 반환에 따른 백오프 재시도에 맡긴다 | 같은 파일 `SetupWithManager` |
+| Argo CD 가 `Ready=False` 를 어떻게 보는가 | **Degraded**(`Ready=True` 일 때만 Healthy, `Unknown` 이거나 조건이 없으면 Progressing) | Argo CD `resource_customizations/keda.sh/ScaledObject/health.lua` |
+| Degraded·Progressing 이 다음 wave 를 막는가 | 막는다. Argo CD 는 한 wave 의 리소스가 모두 Healthy 가 돼야 다음 wave 로 간다. 문서가 "앱이 영원히 Healthy 가 못 될 수 있다" 고 경고한다 | Argo CD sync-waves 문서 |
+
+즉 wave 3 으로 옮기면 worker(wave 4)가 만들어지기 전에 ScaledObject 가 Degraded 로 남아 **wave 4 를 막는다.** 교착이 사라지는 것이 아니라 방향만 바뀐다.
+그래서 `check-phase2-render.py` 의 "ScaledObject 는 대상보다 뒤 wave" 규칙은 그대로 두고, 이유를 오류 메시지에 적었다.
+
+**비교한 방법**
+
+| 방법 | 교착이 사라지는가 | 비용·위험 | 판단 |
+|---|---|---|---|
+| A. ScaledObject·TriggerAuthentication 을 wave 3 으로 | **아니다**(위 표) | — | 채택하지 않음 |
+| B. ScaledObject 를 worker 와 같은 wave 4 로 | 아마도(KEDA `initialCooldownPeriod` 기본 0 이라 만들어진 뒤 곧바로 0 으로 내린다). 같은 wave 에서는 Deployment 가 먼저 적용되고 사용자 정의 종류가 뒤에 적용된다고 알려져 있으나 확인하지 못했다. 그 사이 Pod 가 잠시 Pending | 순서가 어긋나면 일시 Degraded → KEDA 백오프 재시도에 의존. 클러스터에서 확인되지 않음. 기존 규칙(`wave(so) > wave(target)`)을 깬다 | 확실하지 않아 채택하지 않음 |
+| C. Argo CD 헬스 검사 우회 | 문서에 방법이 없다(`ignore-healthcheck` 어노테이션은 확인한 문서에 없음) | 쓰면 worker 의 이상이 Application 상태에 안 보인다 | 채택하지 않음 |
+| **D. worker `replicas: 0` + Application `ignoreDifferences`(`/spec/replicas`) + `RespectIgnoreDifferences=true`** | **예.** Argo CD 문서: 리소스가 아직 없으면 원하는 상태를 그대로 적용한다 → 새 클러스터에서 0 으로 태어나 곧바로 Healthy 이고 wave 5 가 진행된다. 이후 개수는 KEDA 가 정하고 Argo CD 는 이 필드를 diff·sync 에서 모두 무시한다 | 파일 2개(worker-deployment.yaml, argocd/apps/parking-guardian.yaml). **짝이 깨지면 selfHeal 이 KEDA 가 올린 개수를 0 으로 되돌려 처리 중인 Worker 를 죽인다** → 검사·테스트로 짝을 강제 | **채택(로컬 수정만 했고 클러스터에는 아직 반영하지 않았다)** |
+| E. 손으로 `kubectl scale ... --replicas=0` | 그때만 | 재구축마다 사람이 해야 한다 | 임시 우회일 뿐 |
+
+**검증한 것 [로컬]**: 렌더링 결과에서 worker 는 `wave 4 / replicas 0`, ScaledObject·TriggerAuthentication 은 `wave 5`. `check-phase2-render.py` 가 (1) worker 가 `replicas: 0` 이고
+(2) Application 의 `ignoreDifferences` 가 `apps/Deployment/worker` 의 `/spec/replicas` 를 가리키고 (3) `RespectIgnoreDifferences=true` 인지를 검사하며, 단위 테스트가
+"replicas 없음(옛 상태)", "ignoreDifferences 없음", "RespectIgnoreDifferences 없음", "다른 Deployment·다른 경로를 무시", "0 이 아닌 값", "wave 3" 을 각각 잡는다.
+**못 한 것 [미확인]**: 실제 클러스터에서의 새 배포와 selfHeal 동작. Argo CD 문서의 동작을 근거로 했을 뿐 이번 클러스터에서 실험하지 않았다.
+
+**이미 떠 있는 클러스터에 반영할 때의 주의**: Git 에 두 파일이 같은 커밋으로 들어가면, 루트 앱이 Application 설정을 갱신하기 전에 `parking-guardian` 앱이 새 Deployment(`replicas: 0`)를
+옛 Application 설정(무시 없음)으로 동기화하면 selfHeal 이 한 번 worker 를 0 으로 내릴 수 있다. 처리 중인 메시지는 60초 뒤 다시 오지만, 안전하게 하려면
+(1) 큐가 비고 worker 가 0 일 때 반영하거나 (2) `argocd/apps/parking-guardian.yaml` 을 먼저 커밋·동기화한 뒤 `worker-deployment.yaml` 을 커밋한다. 반영은 별도 승인을 받는다.
+
+**비교 구성(min 1)에서**: ScaledObject 의 min 이 1 이어도 worker 는 `replicas: 0` 으로 태어나고 KEDA 가 곧바로 1 로 올린다(큐가 비어도 min 1). 같은 짝이 필요하다.
