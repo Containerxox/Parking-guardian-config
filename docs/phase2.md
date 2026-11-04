@@ -2,7 +2,9 @@
 
 Phase 2 는 접수와 AI 판별을 큐로 떼어 낸다(앱 리포 ADR 0019). 이 문서는 그 배포 구성을 정리한다. 2026-11-03 기준으로 로컬 렌더링과 계약 검증까지 했고,
 **2026-11-04 에 AWS(EKS)에 처음 배포해 정상 경로 E2E 1건을 확인했다** → [docs/e2e-aws-first-run-2026-11-04.md](e2e-aws-first-run-2026-11-04.md)
-(단일 실행이라 일반적인 성능으로 읽지 않는다). 운영 절차: [RDS 비밀번호 회전 런북](runbook-rds-rotation.md), [테스트 장비 사용 절차](test-device-procedure.md).
+(단일 실행이라 일반적인 성능으로 읽지 않는다). 같은 날 차량 사진 2장으로 **위반 2회 확정·관리자 알림까지** 확인했다 → [e2e-aws-violation-confirm-2026-11-04.md](e2e-aws-violation-confirm-2026-11-04.md).
+운영 절차: [RDS 비밀번호 회전 런북](runbook-rds-rotation.md), [테스트 장비 사용 절차](test-device-procedure.md).
+후속 분석·계획: [남은 운영 위험 R3·R6·R7 + Fluent Bit 경고](ops-risks-2026-11-04.md), [DNS·관리자 UI 연결 계획](dns-admin-ui-plan.md), [Phase 1↔2 부하 테스트 계획](loadtest-plan-phase1-vs-phase2.md).
 계정 ID·도메인 같은 식별자는 이 문서에 쓰지 않는다(`config.env` 에만 있다).
 
 검증: `python scripts/check-phase2-render.py` (Windows 콘솔은 `PYTHONUTF8=1`). 배포 직전에는 `--strict` 로 아래 2절이 모두 끝났는지 본다.
@@ -158,8 +160,10 @@ Worker 가 0개일 때 KEDA 가 큐를 못 읽으면(IAM 누락, 네트워크) 0
 min 0 구성의 **감지 방법**: 배포 뒤 `kubectl -n parking-guardian get scaledobject worker` 의 READY=True·ACTIVE 를 확인하고, SQS `ApproximateAgeOfOldestMessage`
 경보(위험 R13)를 둔다. KEDA 인증이 확인되기 전에는 min 1 로 시작하는 것도 방법이다(공존 구성의 배포 제약은 R7).
 
-**HPA 와의 충돌**: 없다. backend HPA 는 `backend`, inference HPA 는 `inference`, KEDA 는 `worker` 만 조절한다(KEDA 가 만드는 HPA 는 `keda-hpa-worker`). worker Deployment 에는
-`replicas` 를 적지 않아 Argo CD selfHeal 이 KEDA 의 결정을 되돌리지 않는다. 검증 스크립트가 대상 중복과 `replicas` 존재를 검사한다.
+**HPA 와의 충돌**: 없다. backend HPA 는 `backend`, inference HPA 는 `inference`, KEDA 는 `worker` 만 조절한다(KEDA 가 만드는 HPA 는 `keda-hpa-worker`). worker Deployment 의
+`replicas` 는 **처음 만들 때의 0 하나뿐**이고(첫 배포 교착 방지, 8.8) Application 의 `ignoreDifferences`(`/spec/replicas`) + `RespectIgnoreDifferences=true` 가 있어
+Argo CD selfHeal 이 KEDA 의 결정을 되돌리지 않는다 — 2026-11-04 Worker 1개가 5분 떠 있는 동안 `Synced` 유지로 확인했다([e2e-aws-violation-confirm-2026-11-04.md](e2e-aws-violation-confirm-2026-11-04.md)).
+검증 스크립트가 대상 중복, `replicas` 값(0 만 허용)과 이 짝을 검사한다.
 
 **FIFO 병렬성의 한계 (중요)**: 큐는 FIFO 이고 MessageGroupId 가 장비다. 같은 장비의 메시지는 앞 것이 끝나야 다음이 나온다. 그래서 Worker 를 늘려도 **한 장비의 처리는 한 번에 하나**다.
 확장이 도움이 되는 경우는 여러 장비가 동시에 쌓일 때뿐이고, Worker 수의 실효 상한은 활성 장비 수다. KEDA 의 지표(전체 메시지 수)는 이 그룹 제약을 모른다:
@@ -221,6 +225,9 @@ KEDA 의 실제 스케일(0→1, 1→N)과 fallback 동작, Pod Identity 동작,
 `80 + 80 + 55 = 215`. Pod 는 노드 하나에 들어가야 하므로 합 215m 는 "200m 짜리 api 가 하나 더"를 보장하지 않는다(어느 노드에도 200m 가 없다).
 
 ### 8.2 노드별 여유와 롤링 가능 여부 (요청 기준 best-case, `check-phase2-render.py`)
+
+> **2026-11-04 갱신**: 아래 표는 노드당 앱 가용 1280m 를 가정한 설계 계산이다. 실제 클러스터에서는 CloudWatch Agent 요청을 250m → 100m 로 낮춘 뒤 요청 합이 4235m / 5790m(73%)이고,
+> Worker 가 떠 있어도 마이그레이션 Job 과 backend surge 는 들어가며 **막히는 것은 1000m 짜리(inference surge·inference 3번째·Worker 2번째)뿐**이다. 실측 기반 계산은 [ops-risks-2026-11-04.md R7](ops-risks-2026-11-04.md).
 
 | 구성 | 노드별 남는 CPU (N1 / N2 / N3) | 남는 메모리 (Mi) | 스케줄 가능한 변화 | 불가능한 변화 |
 |---|---|---|---|---|
