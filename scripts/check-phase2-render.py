@@ -523,10 +523,13 @@ def check_comparison_mode() -> None:
     left = sorted(f"{k} {n}" for (k, n) in by if n == "inference" and k in removed_kinds)   # ServiceAccount·ConfigMap 은 남아도 해가 없다
     check(left == [], f"inference 의 Deployment·Service·HPA·PDB·PodMonitor 가 없다 (남은 것: {left})")
     so = by[("ScaledObject", "worker")]["spec"]
-    n = so["minReplicaCount"]
-    check(so["minReplicaCount"] == so["maxReplicaCount"] and n in (2, 3, 4),
-          f"Worker 고정형: 최소 = 최대 = N (N 은 2~4, 자동 확장 없음) — 실제 {so['minReplicaCount']} / {so['maxReplicaCount']}")
-    check(so.get("fallback", {}).get("replicas") == n, f"KEDA fallback 도 같은 N({n}) — 실제 {so.get('fallback', {}).get('replicas')}")
+    lo, hi, fb = so["minReplicaCount"], so["maxReplicaCount"], so.get("fallback", {}).get("replicas")
+    if lo == hi:
+        check(lo in (2, 3, 4), f"Worker 고정형: 최소 = 최대 = N (N 은 2~4, 자동 확장 없음) — 실제 {lo} / {hi}")
+        check(fb == lo, f"KEDA fallback 도 같은 N({lo}) — 실제 {fb}")
+    else:
+        check(2 <= lo < hi <= 4, f"Worker 자동 확장형(KEDA): 2 <= 최소 < 최대 <= 4 — 실제 {lo} / {hi}")
+        check(isinstance(fb, int) and lo <= fb <= hi, f"KEDA fallback 이 최소~최대 사이 — 실제 {fb} (읽기 오류 때만 쓰이는 값, 정상 확장과 무관)")
     check(all(k in by for k in (("Deployment", "backend"), ("Deployment", "worker"), ("Deployment", "relay"), ("Ingress", "parking-guardian"))),
           "backend·worker·relay·Ingress 는 그대로다")
     problems = reference_problems(objs) + hpa_conflicts(objs, parking_guardian_app()) + scaled_target_problems(objs, parking_guardian_app())
