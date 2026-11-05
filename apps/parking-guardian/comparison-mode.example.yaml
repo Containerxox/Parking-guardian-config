@@ -4,7 +4,7 @@
 #   Worker 가 쓴다(api 2 + Worker 2 + Relay). 공존 구성(inference 2 + Worker 1)은 Worker 가 떠 있는 동안 마이그레이션 Job 과 inference 롤링이 막힌다
 #   (scripts/check-phase2-render.py 의 배치 계산, docs/phase2.md 4절).
 #
-# [2026-11-05 Worker 확장 검증] 아래 ScaledObject 값(min / max / fallback)은 **2 / 2 / 2**(Worker 2개 고정, 기본 구성)이다. 확장 검증 중 쓴 값: 고정 3 / 3 / 3, 고정 4 / 4 / 4, KEDA 2 / 4 / 2. 값이 같은 숫자 N(2~4)이면
+# [2026-11-05 Worker 확장 검증] 아래 ScaledObject 값(min / max / fallback)은 지금 **3 / 3 / 3**(Worker 3개 고정, 실험 2 의 Worker 3개 회차)이다. 기본 구성은 2 / 2 / 2. 확장 검증 중 쓴 값: 고정 3 / 3 / 3, 고정 4 / 4 / 4, KEDA 2 / 4 / 2. 값이 같은 숫자 N(2~4)이면
 #   고정형이다(scripts/check-phase2-render.py 가 인정). 되돌리려면 세 값을 2 로 바꾼다. 문서 docs/phase2-comparison-run-2026-11-05.md 8절.
 # 하는 일: inference Deployment / Service / HPA / PDB / PodMonitor 를 지우고, Worker 를 **최소 2 / 최대 2 로 고정**한다(2026-11-05 실험 1 의 Phase 2 비교 구성:
 #   Phase 1 의 inference 2개 = Worker 2개, 같은 AI CPU 요청 2000m. min=max 이므로 KEDA 가 개수를 바꾸지 못한다 = 자동 확장 없음. fallback 도 2 로 맞춰 읽기 오류 때도 2 를 유지한다.
@@ -61,10 +61,10 @@ patches:
     patch: |-
       - op: replace
         path: /spec/minReplicaCount
-        value: 2
+        value: 3
       - op: replace
         path: /spec/maxReplicaCount
-        value: 2
+        value: 3
       - op: replace
         path: /spec/fallback/replicas
-        value: 2
+        value: 3
