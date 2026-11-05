@@ -54,6 +54,12 @@ spec:
           imagePullPolicy: IfNotPresent
           command: ["flask", "outbox-relay"] # 기본 2초 간격, 1800회차마다 보존 정리. FLASK_APP=wsgi 는 이미지 ENV
 
+          # 관측성 2단계: flask outbox-relay 가 METRICS_PORT(앱 기본 9102)에서 /metrics 를 낸다(별도 스레드, Relay 루프와 무관).
+          # relay-podmonitor.yaml 이 이 이름(metrics)으로 15초마다 긁는다. Service 에는 넣지 않는다.
+          ports:
+            - name: metrics
+              containerPort: 9102
+
           # backend-config(DB_*, S3_BUCKET, SQS_*, INFERENCE_BACKEND=http …) + queue-config(QUEUE_BACKEND=sqs) + pipeline-secrets(DB 계정).
           # Relay 는 추론을 하지 않는다. INFERENCE_BACKEND=http 라서 inference 어댑터는 만들어지기만 하고 호출되지 않는다.
           envFrom:

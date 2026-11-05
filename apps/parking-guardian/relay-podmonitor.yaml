@@ -1,0 +1,23 @@
+# relay PodMonitor (관측성 2단계): relay Pod 의 metrics 포트(9102)를 15초마다 긁는다. backend-podmonitor.yaml 과 같은 방식.
+# 지표: pg_queue_messages(SQS 대기·처리 중·지연, DLQ), pg_jobs(DB 상태별 작업 수, dead_lettered 포함), pg_oldest_open_job_age_seconds,
+#       pg_relay_publish_*(발행 성공·실패·지연), pg_sqs_api_errors_total, pg_relay_last_pass_timestamp_seconds. 정의: capston 앱 app/metrics.py.
+# job 라벨은 parking-guardian/relay 가 된다(알림 규칙 PGPipelineMetricsMissing 이 up{job="parking-guardian/relay"} 를 본다).
+# CRD(PodMonitor)는 모니터링 앱이 설치한다: SkipDryRunOnMissingResource + Application retry 로 순서를 맞춘다(backend 와 같음).
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: relay
+  namespace: parking-guardian
+  labels:
+    app.kubernetes.io/name: relay
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: relay
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s

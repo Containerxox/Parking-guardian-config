@@ -39,6 +39,7 @@ resources:
   - worker-deployment.yaml    # sync-wave 4. Phase 2 판별 Worker (flask judge-worker, YOLO 프로세스 내장). Service 없음
   - worker-scaledobject.yaml  # sync-wave 5. KEDA(SQS 대기 수). CRD 는 keda 앱이 설치
   - relay-deployment.yaml     # sync-wave 4. Phase 2 아웃박스 Relay (flask outbox-relay). Service 없음
+  - relay-podmonitor.yaml     # 관측성 2단계: relay /metrics 스크레이프(CRD 는 monitoring 앱이 설치)
   - frontend-deployment.yaml
   - frontend-service.yaml
   - ingress.yaml

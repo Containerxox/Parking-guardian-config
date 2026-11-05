@@ -148,3 +148,187 @@ tests:
       - eval_time: 8m
         alertname: PGAlertPipelineTest
         exp_alerts: []
+  # =========================== 관측성 2단계: pipeline 규칙 ===========================
+  # --- PGDLQHasMessages: dead_lettered 작업 1건이 3분 -> 1분 뒤 critical. 0 이면 침묵 ---
+  - interval: 1m
+    input_series:
+      - series: 'pg_jobs{namespace="parking-guardian",pod="relay-x",status="dead_lettered"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: PGDLQHasMessages
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: PGDLQHasMessages
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: "DLQ 메시지 또는 dead_lettered 작업 1건"
+              description: "세 번 실패해 DLQ 로 간 사진 판정이 있다. SQS DLQ 메시지는 Relay 가 곧 dead_lettered 작업으로 옮기므로 pg_jobs{status=\"dead_lettered\"} 가 지속 신호다. 원인(Worker 로그, 이미지·모델 오류)을 본 뒤 flask jobs redrive."
+  # SQS DLQ 에 숨겨져(not_visible) 남은 메시지도 울린다. 두 relay Pod 가 같은 값을 내도 이중 계산하지 않는다(1건)
+  - interval: 1m
+    input_series:
+      - series: 'pg_queue_messages{pod="relay-a",queue="dlq",state="not_visible"}'
+        values: '1x10'
+      - series: 'pg_queue_messages{pod="relay-b",queue="dlq",state="not_visible"}'
+        values: '1x10'
+      - series: 'pg_jobs{pod="relay-a",status="dead_lettered"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: PGDLQHasMessages
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: "DLQ 메시지 또는 dead_lettered 작업 1건"
+              description: "세 번 실패해 DLQ 로 간 사진 판정이 있다. SQS DLQ 메시지는 Relay 가 곧 dead_lettered 작업으로 옮기므로 pg_jobs{status=\"dead_lettered\"} 가 지속 신호다. 원인(Worker 로그, 이미지·모델 오류)을 본 뒤 flask jobs redrive."
+  # DLQ 와 dead_lettered 가 모두 0 이면 침묵, 지표가 아예 없어도 이 규칙은 울리지 않는다(없음은 PGPipelineMetricsMissing 이 담당)
+  - interval: 1m
+    input_series:
+      - series: 'pg_queue_messages{queue="dlq",state="visible"}'
+        values: '0x10'
+      - series: 'pg_jobs{status="dead_lettered"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: PGDLQHasMessages
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'unrelated_metric{a="b"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: PGDLQHasMessages
+        exp_alerts: []
+  # --- PGQueueBacklogSustained: 대기 20 + 처리 중 15 = 35 가 6분 -> 울림(5분 뒤). 합계 25 는 침묵. delayed 는 세지 않는다 ---
+  - interval: 1m
+    input_series:
+      - series: 'pg_queue_messages{pod="relay-a",queue="main",state="visible"}'
+        values: '20x10'
+      - series: 'pg_queue_messages{pod="relay-a",queue="main",state="not_visible"}'
+        values: '15x10'
+      - series: 'pg_queue_messages{pod="relay-a",queue="main",state="delayed"}'
+        values: '100x10'
+      - series: 'pg_queue_messages{pod="relay-b",queue="main",state="visible"}'
+        values: '20x10'
+      - series: 'pg_queue_messages{pod="relay-b",queue="main",state="not_visible"}'
+        values: '15x10'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: PGQueueBacklogSustained
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: PGQueueBacklogSustained
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "SQS 적체 35건(대기 + 처리 중)이 5분 넘게 이어짐"
+              description: "판정 용량보다 사진 유입이 많다. Worker Ready 수와 KEDA 현재·목표 replica, 노드 자원을 확인한다. 큐 대기시간은 pg_oldest_open_job_age_seconds 와 E2E 지표(3단계)로 본다."
+  - interval: 1m
+    input_series:
+      - series: 'pg_queue_messages{queue="main",state="visible"}'
+        values: '15x10'
+      - series: 'pg_queue_messages{queue="main",state="not_visible"}'
+        values: '10x10'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: PGQueueBacklogSustained
+        exp_alerts: []
+  # --- PGPipelineOldestJobAge: 45 초가 4분 -> 울림(3분 뒤). 20 초는 침묵. 2분만 높으면 침묵 ---
+  - interval: 1m
+    input_series:
+      - series: 'pg_oldest_open_job_age_seconds{pod="relay-a"}'
+        values: '45x10'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: PGPipelineOldestJobAge
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: PGPipelineOldestJobAge
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "가장 오래된 미완료 작업 45초 (DB 기준)"
+              description: "pending_publish·queued·processing 중 가장 오래된 작업의 나이가 목표(E2E 10초)를 크게 넘는다. 발행(Relay)·큐·Worker 어디서든 정체될 수 있다. SQS 의 오래된 메시지 나이와 다른 값이다."
+  - interval: 1m
+    input_series:
+      - series: 'pg_oldest_open_job_age_seconds{pod="relay-a"}'
+        values: '20x10'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: PGPipelineOldestJobAge
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'pg_oldest_open_job_age_seconds{pod="relay-a"}'
+        values: '45x2 10x8'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: PGPipelineOldestJobAge
+        exp_alerts: []
+  # --- PGPipelineMetricsMissing ---
+  # (a) 정상: relay up, 마지막 회차와 큐 조회가 최신(값 = 시각) -> 침묵
+  - interval: 1m
+    input_series:
+      - series: 'up{job="parking-guardian/relay",pod="relay-a"}'
+        values: '1x20'
+      - series: 'pg_relay_last_pass_timestamp_seconds{pod="relay-a"}'
+        values: '0+60x20'
+      - series: 'pg_queue_depth_last_success_timestamp_seconds{pod="relay-a"}'
+        values: '0+60x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: PGPipelineMetricsMissing
+        exp_alerts: []
+  # (b) relay 스크레이프 없음(up 시리즈 자체가 없음) -> 5분 뒤 울림
+  - interval: 1m
+    input_series:
+      - series: 'unrelated_metric{a="b"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: PGPipelineMetricsMissing
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: PGPipelineMetricsMissing
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "파이프라인 지표를 읽을 수 없다(Relay 스크레이프·루프 또는 SQS 큐 깊이 조회)"
+              description: "Relay /metrics 가 수집되지 않거나, Relay 루프가 멈췄거나, 큐 깊이 조회가 실패한다(sqs:GetQueueAttributes 권한 확인). 이 동안 SQS 적체·DLQ 알림은 판단할 수 없다(지표 없음 != 0)."
+  # (c) 큐 깊이 조회가 한 번도 성공하지 못함(권한 없음): relay 는 살아 있고 pass 시각은 최신이지만 queue_depth 시각 시리즈가 없다 -> 울림
+  - interval: 1m
+    input_series:
+      - series: 'up{job="parking-guardian/relay",pod="relay-a"}'
+        values: '1x20'
+      - series: 'pg_relay_last_pass_timestamp_seconds{pod="relay-a"}'
+        values: '0+60x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: PGPipelineMetricsMissing
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "파이프라인 지표를 읽을 수 없다(Relay 스크레이프·루프 또는 SQS 큐 깊이 조회)"
+              description: "Relay /metrics 가 수집되지 않거나, Relay 루프가 멈췄거나, 큐 깊이 조회가 실패한다(sqs:GetQueueAttributes 권한 확인). 이 동안 SQS 적체·DLQ 알림은 판단할 수 없다(지표 없음 != 0)."
+  # (d) Relay 루프가 멈춤: 스크레이프는 되지만 마지막 회차 시각이 고정(600 초에서 멈춤) -> 울림. 회복하면 해소
+  - interval: 1m
+    input_series:
+      - series: 'up{job="parking-guardian/relay",pod="relay-a"}'
+        values: '1x25'
+      - series: 'pg_relay_last_pass_timestamp_seconds{pod="relay-a"}'
+        values: '0+60x10 600x15'
+      - series: 'pg_queue_depth_last_success_timestamp_seconds{pod="relay-a"}'
+        values: '0+60x25'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: PGPipelineMetricsMissing
+        exp_alerts: []          # 멈춘 지 4분(< for 5m + 임계 2분)
+      - eval_time: 20m
+        alertname: PGPipelineMetricsMissing
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "파이프라인 지표를 읽을 수 없다(Relay 스크레이프·루프 또는 SQS 큐 깊이 조회)"
+              description: "Relay /metrics 가 수집되지 않거나, Relay 루프가 멈췄거나, 큐 깊이 조회가 실패한다(sqs:GetQueueAttributes 권한 확인). 이 동안 SQS 적체·DLQ 알림은 판단할 수 없다(지표 없음 != 0)."

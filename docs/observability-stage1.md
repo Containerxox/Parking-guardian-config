@@ -87,3 +87,19 @@ docker run --rm --entrypoint /bin/amtool -v <절대경로>/alertmanager.yml:/etc
 
 ## 7. 비용
 Secrets Manager 비밀 1개 $0.40/월(+ESO 1시간 갱신 호출은 무시 가능). Alertmanager Pod 는 기존 노드 안(메모리 64Mi 요청). Slack 무료. 노드 증설 없음.
+
+## 8. Slack Firing/Resolved 시험 결과 (2026-11-06 03:05–03:10 KST, 배포 후)
+시험은 Alertmanager 지표(`alertmanager_notifications_total{integration="slack"}`)와 Prometheus 규칙 상태 API 로 관찰했다. **Slack 메시지의 실제 수신은 사용자가 직접 확인**한다(아래 "사용자 확인" 칸). 웹훅 URL 은 읽거나 출력하지 않았다. 운영 Pod·큐·데이터 변경 없음.
+| 항목 | 방법 A (Alertmanager API 직접 주입) | 방법 B (시험 규칙 + 스위치 ConfigMap) |
+|---|---|---|
+| 시작 | 03:05:35 POST `PGSlackTest`(test=true, severity=info, endsAt +2분) → HTTP 200 | 03:08:41 `kubectl create configmap pg-alert-test-switch` |
+| Prometheus | (해당 없음) | `PGAlertPipelineTest` `for: 0m` 이라 Pending 없이 **+33초(03:09:14) Firing**, Alertmanager 에 즉시 active |
+| **Firing 전송** | **+13초(03:05:47)** — Slack 전송 카운터 0 → 1 | **+43초(03:09:24)** (규칙 평가·수집 주기 33초 + 그룹 대기 10초) — 2 → 3 |
+| 해소 | endsAt(03:07:35) 도달 | 03:09:34 `kubectl delete configmap`; Prometheus 규칙 `inactive`, Alertmanager 알림 0 |
+| **Resolved 전송** | **+131초(03:07:45)** (endsAt 후 10초, group_interval 1분 안의 다음 flush) — 1 → 2 | **삭제 후 +52초(03:10:26)** — 3 → 4 |
+| 전송 실패 | 0 | 0 |
+| 중복 전송 | 없음(Firing 1 + Resolved 1) | 없음(Firing 1 + Resolved 1) |
+| 사용자 확인(Slack 수신) | (사용자 확인 대기) | (사용자 확인 대기) |
+- 종료 상태: 활성 알림 0개, 시험 ConfigMap 삭제 확인(`NotFound`), Prometheus 규칙 6개 모두 `inactive`/`ok`, Alertmanager 오류·경고 로그 0건. backend 2/2, worker 2/2, relay 1/1, frontend 1/1, 앱 Pod 재시작 0, SQS/DLQ 0/0.
+- 전달 지연 정리: 규칙 평가 방식(B)은 Firing 약 43초, Resolved 약 52초(삭제 후). 직접 주입(A)은 Firing 13초. 실제 장애 알림(for 5m 등)은 여기에 각 규칙의 `for` 기간이 더해진다.
+- 설정 확인: `test=true` 경로(그룹 대기 10초·간격 1분)가 의도대로 동작, `send_resolved` 동작, 템플릿 렌더링(제목 `[FIRING:1] …` / `[RESOLVED] …`)은 로컬 컨테이너 시험에서 확인(Slack 화면은 사용자 확인).

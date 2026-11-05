@@ -1,9 +1,9 @@
-"""Grafana 대시보드 JSON 5개를 만든다(Phase 1 용 3개 + Phase 2 용 2개). 손으로 JSON 을 고치지 말고 이 파일을 고친 뒤 다시 실행한다.
+"""Grafana 대시보드 JSON 6개를 만든다(Phase 1 용 3개 + Phase 2 용 3개). 손으로 JSON 을 고치지 말고 이 파일을 고친 뒤 다시 실행한다.
 
     python build_dashboards.py          (이 폴더에서. 표준 라이브러리만 쓴다)
 
 만드는 것: phase-comparison.json(Phase 비교 핵심), resources.json(리소스), inference.json(추론 파이프라인) — Phase 1 용, 폴더 'Parking Guardian (Phase 1 참고)'.
-overview-phase2.json(Service Overview), infrastructure-phase2.json(Infrastructure) — Phase 2 용, 폴더 'Parking Guardian (Phase 2)'.
+overview-phase2.json(Service Overview), infrastructure-phase2.json(Infrastructure), pipeline-phase2.json(SQS & Async Pipeline) — Phase 2 용, 폴더 'Parking Guardian (Phase 2)'.
 kustomization.yaml 의 configMapGenerator 가 이 JSON 들을 ConfigMap 으로 만들고 Grafana sidecar 가 불러온다.
 
 색 규칙(한 번 정해 바꾸지 않는다. 같은 대상은 모든 대시보드에서 같은 색):
@@ -367,10 +367,72 @@ def infrastructure_phase2():
     return dashboard("pg2-infra", "Parking Guardian / Infrastructure (Phase 2)", P, ["parking-guardian", "phase2"], time_from="now-1h")
 
 
+def pipeline_phase2():
+    """SQS & Async Pipeline (관측성 2단계): relay /metrics(PodMonitor relay). 값을 알 수 없을 때는 'No data' 로 보이게 한다(0 으로 대체하지 않는다)."""
+    P = []
+    P.append(text(
+        "**SQS & Async Pipeline** 접수(202) 뒤 사진이 SQS → Worker 로 가는 길. **빈 패널(No data)은 0 이 아니라 '알 수 없음'이다**(Relay 스크레이프 실패·SQS 조회 권한 없음). "
+        "맨 아래 '지표 신선도' 패널과 알림 PGPipelineMetricsMissing 이 그 상태를 알린다. "
+        "**두 가지 '오래된' 값을 섞지 않는다**: (1) 아래 '가장 오래된 미완료 작업 나이' = **DB 기준**(pending_publish·queued·processing 중 가장 오래된 detection_jobs.created_at, Relay 회차마다 계산). "
+        "(2) SQS 의 ApproximateAgeOfOldestMessage = SQS 안의 메시지 나이(CloudWatch, 1~2분 지연·근사) — 이 대시보드에는 없다(4단계 선택).", 0, 0, 24, 4))
+
+    P.append(panel("SQS 큐 깊이 (메인): 대기 / 처리 중 / 지연", [
+        q('max by (state) (pg_queue_messages{queue="main"})', "{{state}}", None),
+    ], 0, 4, 8, 8, unit="short", decimals=0, color_by_name=True, legend_calcs=("max", "lastNotNull"),
+        desc="visible = 받을 수 있는 메시지, not_visible = Worker 가 처리 중(visibility timeout), delayed = 지연. SQS GetQueueAttributes 의 근사값. 알림 PGQueueBacklogSustained = 대기 + 처리 중 > 30 이 5분."))
+    P.append(panel("DLQ: SQS 메시지 vs DB dead_lettered 작업", [
+        q('sum(max by (state) (pg_queue_messages{queue="dlq"}))', "SQS DLQ 메시지(대기+처리 중+지연)", ORANGE),
+        q('max(pg_jobs{status="dead_lettered"})', "DB dead_lettered 작업(지속)", CRITICAL),
+    ], 8, 4, 8, 8, unit="short", decimals=0, legend_calcs=("max", "lastNotNull"),
+        desc="Relay 가 DLQ 를 2초마다 읽어 작업을 dead_lettered 로 옮기고 메시지를 지운다. SQS 쪽은 거의 항상 0 이고, 지속 신호는 DB 의 dead_lettered(재처리 전까지 남음). 알림 PGDLQHasMessages 는 둘 중 하나라도 > 0 이 1분."))
+    P.append(panel("가장 오래된 미완료 작업 나이 (DB 기준)", [
+        q('max(pg_oldest_open_job_age_seconds)', "미완료 작업 중 최대 나이", ORANGE),
+    ], 16, 4, 8, 8, unit="s", thresholds=[30],
+        desc="미완료 = status pending_publish·queued·processing, 기준 = detection_jobs.created_at(DB 시각), Relay 회차(2초)마다 계산, 없으면 0. SQS 의 ApproximateAgeOfOldestMessage 가 아니다: 발행 대기·판정 중인 작업도 포함한다. 점선 30초 = 알림 PGPipelineOldestJobAge(3분)."))
+
+    P.append(panel("작업 상태별 개수 (DB)", [
+        q('max by (status) (pg_jobs)', "{{status}}", None),
+    ], 0, 12, 8, 7, unit="short", decimals=0, color_by_name=True, legend_calcs=("max", "lastNotNull"),
+        desc="Relay 가 15초마다 센다. pending_publish = 아직 SQS 에 못 보낸 작업(Relay 가 재시도), queued = SQS 에 있음, processing = Worker 가 판정 중, dead_lettered = 3회 실패."))
+    P.append(panel("Relay 발행 (건/s)", [
+        q('sum by (outcome) (rate(pg_relay_publish_total[2m]))', "{{outcome}}", None),
+    ], 8, 12, 8, 7, unit="reqps", color_by_name=True, legend_calcs=("max", "lastNotNull"),
+        desc="Relay 가 SQS 로 보낸 작업. 접수(API) 즉시 발행은 세지 않는다 — 대부분의 작업은 API 가 바로 보내므로 이 값은 보통 0 이고, SQS 오류로 API 가 못 보낸 작업을 Relay 가 재발행할 때만 오른다."))
+    P.append(panel("Relay 발행 지연 (접수 → 발행)", [
+        q(hist_quantile(0.95, "pg_relay_publish_delay_seconds", ""), "p95", ORANGE),
+        q(hist_quantile(0.99, "pg_relay_publish_delay_seconds", ""), "p99", ORANGE_DARK),
+    ], 16, 12, 8, 7, unit="s", desc="Relay 가 재발행한 작업의 (발행 시각 − 접수 시각). 재발행이 없으면 데이터가 없다(No data = 해당 사건 없음). 히스토그램 분위수는 버킷 보간 값."))
+
+    P.append(panel("SQS API 오류 (건/s, 작업별)", [
+        q('sum by (operation) (rate(pg_sqs_api_errors_total[5m]))', "{{operation}}", None),
+    ], 0, 19, 8, 7, unit="reqps", color_by_name=True, legend_calcs=("max", "lastNotNull"),
+        desc="Relay 가 만든 SQS 호출 실패: send(발행), receive_dead_letters(DLQ 읽기), get_queue_attributes(큐 깊이 조회). get_queue_attributes 오류가 계속되면 relay IAM 에 sqs:GetQueueAttributes 가 없는 것."))
+    P.append(panel("지표 신선도 (초)", [
+        q('time() - max(pg_relay_last_pass_timestamp_seconds)', "Relay 마지막 회차 이후", BLUE),
+        q('time() - max(pg_queue_depth_last_success_timestamp_seconds)', "큐 깊이 조회 마지막 성공 이후", ORANGE),
+    ], 8, 19, 8, 7, unit="s", thresholds=[120], legend_calcs=("max", "lastNotNull"),
+        desc="정상: 회차 약 2초, 큐 조회 약 15초 이내. 값이 커지거나 No data 면 Relay 가 멈췄거나 큐 깊이를 못 읽는 중이다(위 큐 패널이 비는 이유). 알림 PGPipelineMetricsMissing."))
+    P.append(panel("Relay 스크레이프 상태 (초록 = UP)", [
+        q('max by (pod) (up{job="parking-guardian/relay"})', "{{pod}}"),
+    ], 16, 19, 8, 7, kind="state-timeline", desc="Prometheus 가 Relay /metrics 를 긁는 중인가. 빨강 = DOWN, No data = 대상 없음(PodMonitor 미배포)."))
+
+    P.append(panel("Worker: Ready 대 목표", [
+        q(f'sum(kube_deployment_status_replicas_ready{{{NS}, deployment="worker"}})', "Ready", BLUE),
+        q(f'sum(kube_deployment_spec_replicas{{{NS}, deployment="worker"}})', "목표", BLUE_LIGHT),
+    ], 0, 26, 12, 7, unit="short", decimals=0, legend_calcs=("lastNotNull",), desc="적체가 늘 때 함께 본다. Ready < 목표 = 알림 PGWorkerNotReady."))
+    P.append(panel("Worker: KEDA/HPA 현재·목표 replica", [
+        q(f'kube_horizontalpodautoscaler_status_current_replicas{{{NS}, horizontalpodautoscaler="keda-hpa-worker"}}', "현재", BLUE),
+        q(f'kube_horizontalpodautoscaler_status_desired_replicas{{{NS}, horizontalpodautoscaler="keda-hpa-worker"}}', "목표", ORANGE),
+    ], 12, 26, 12, 7, unit="short", decimals=0, legend_calcs=("lastNotNull",), desc="기본 구성은 고정 2. 확장 실험에서만 움직인다."))
+
+    return dashboard("pg2-pipeline", "Parking Guardian / SQS & Async Pipeline (Phase 2)", P, ["parking-guardian", "phase2"], time_from="now-1h")
+
+
 if __name__ == "__main__":
     here = pathlib.Path(__file__).parent
     for name, build in (("phase-comparison", phase_comparison), ("resources", resources), ("inference", inference),
-                        ("overview-phase2", overview_phase2), ("infrastructure-phase2", infrastructure_phase2)):
+                        ("overview-phase2", overview_phase2), ("infrastructure-phase2", infrastructure_phase2),
+                        ("pipeline-phase2", pipeline_phase2)):
         out = here / f"{name}.json"
         out.write_text(json.dumps(build(), ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
         print("wrote", out.name)
