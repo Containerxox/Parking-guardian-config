@@ -331,10 +331,10 @@ patches:
     patch: |-
       - op: replace
         path: /spec/minReplicaCount
-        value: 3
+        value: 2
       - op: replace
         path: /spec/maxReplicaCount
-        value: 3
+        value: 2
       - op: replace
         path: /spec/fallback/replicas
-        value: 3
+        value: 2
