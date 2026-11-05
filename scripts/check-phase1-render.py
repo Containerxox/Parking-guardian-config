@@ -55,6 +55,11 @@ def render() -> list[dict]:
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp) / "parking-guardian"
         shutil.copytree(APP_DIR, work)
+        kust = work / "kustomization.yaml"
+        kust_text = kust.read_text(encoding="utf-8")
+        marker = "# --- Phase 2 비교 구성"   # 비교 구성 커밋이 켜져 있어도 이 검사는 "기본 구성"(inference 가 있는 상태)을 본다. 패치 자체는 check-phase2-render.py 가 따로 검사한다.
+        if marker in kust_text:
+            kust.write_text(kust_text[:kust_text.index(marker)].rstrip("\n") + "\n", encoding="utf-8", newline="\n")
         env = work / "config.env"
         text = env.read_text(encoding="utf-8")
         if "ECR_INFERENCE=" not in text:

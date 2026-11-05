@@ -503,8 +503,9 @@ def render_with_comparison_patches() -> list[dict]:
         shutil.copytree(app, work)
         example = (app / "comparison-mode.example.yaml").read_text(encoding="utf-8")
         block = example[example.index("\npatches:"):]
-        with (work / "kustomization.yaml").open("a", encoding="utf-8", newline="\n") as f:
-            f.write("\n" + block.lstrip("\n"))
+        if "\npatches:" not in (work / "kustomization.yaml").read_text(encoding="utf-8"):   # 이미 붙어 있으면(비교 구성 커밋 뒤) 그대로 렌더링한다
+            with (work / "kustomization.yaml").open("a", encoding="utf-8", newline="\n") as f:
+                f.write("\n" + block.lstrip("\n"))
         done = subprocess.run(["kubectl", "kustomize", str(work)], capture_output=True, text=True, encoding="utf-8")
         if done.returncode:
             check(False, f"비교 구성 패치를 붙인 렌더링 실패: {done.stderr.strip()[:300]}")
@@ -522,7 +523,8 @@ def check_comparison_mode() -> None:
     left = sorted(f"{k} {n}" for (k, n) in by if n == "inference" and k in removed_kinds)   # ServiceAccount·ConfigMap 은 남아도 해가 없다
     check(left == [], f"inference 의 Deployment·Service·HPA·PDB·PodMonitor 가 없다 (남은 것: {left})")
     so = by[("ScaledObject", "worker")]["spec"]
-    check((so["minReplicaCount"], so["maxReplicaCount"]) == (1, 3), f"Worker 최소 1 / 최대 3 — 실제 {so['minReplicaCount']} / {so['maxReplicaCount']}")
+    check((so["minReplicaCount"], so["maxReplicaCount"]) == (2, 2), f"Worker 최소 2 / 최대 2 (고정, 자동 확장 없음) — 실제 {so['minReplicaCount']} / {so['maxReplicaCount']}")
+    check(so.get("fallback", {}).get("replicas") == 2, f"KEDA fallback 도 2 — 실제 {so.get('fallback', {}).get('replicas')}")
     check(all(k in by for k in (("Deployment", "backend"), ("Deployment", "worker"), ("Deployment", "relay"), ("Ingress", "parking-guardian"))),
           "backend·worker·relay·Ingress 는 그대로다")
     problems = reference_problems(objs) + hpa_conflicts(objs, parking_guardian_app()) + scaled_target_problems(objs, parking_guardian_app())

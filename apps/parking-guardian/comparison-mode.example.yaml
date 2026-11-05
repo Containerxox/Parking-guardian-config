@@ -4,7 +4,9 @@
 #   Worker 가 쓴다(api 2 + Worker 2 + Relay). 공존 구성(inference 2 + Worker 1)은 Worker 가 떠 있는 동안 마이그레이션 Job 과 inference 롤링이 막힌다
 #   (scripts/check-phase2-render.py 의 배치 계산, docs/phase2.md 4절).
 #
-# 하는 일: inference Deployment / Service / HPA / PDB / PodMonitor 를 지우고, Worker 를 최소 1 / 최대 3 으로 올린다.
+# 하는 일: inference Deployment / Service / HPA / PDB / PodMonitor 를 지우고, Worker 를 **최소 2 / 최대 2 로 고정**한다(2026-11-05 실험 1 의 Phase 2 비교 구성:
+#   Phase 1 의 inference 2개 = Worker 2개, 같은 AI CPU 요청 2000m. min=max 이므로 KEDA 가 개수를 바꾸지 못한다 = 자동 확장 없음. fallback 도 2 로 맞춰 읽기 오류 때도 2 를 유지한다.
+#   예전 안은 최소 1 / 최대 3 이었다: 실험에서는 Worker 수가 변수가 되므로 쓰지 않는다. KEDA 자동 확장 실험(P2-K)이 필요하면 이 값을 1/3 으로 되돌린다).
 #   남는 것: inference ServiceAccount·ConfigMap(해가 없다). API 의 INFERENCE_BACKEND=http 는 그대로이고, Phase 1 동기 경로(POST /device/detections)만 503 이 된다.
 #   Phase 2 접수 API(POST /device/detection-jobs)는 영향이 없다.
 #
@@ -57,7 +59,10 @@ patches:
     patch: |-
       - op: replace
         path: /spec/minReplicaCount
-        value: 1
+        value: 2
       - op: replace
         path: /spec/maxReplicaCount
-        value: 3
+        value: 2
+      - op: replace
+        path: /spec/fallback/replicas
+        value: 2

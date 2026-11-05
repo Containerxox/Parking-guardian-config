@@ -285,3 +285,56 @@ replacements:
           name: parking-guardian
         fieldPaths:
           - metadata.annotations.[alb.ingress.kubernetes.io/security-groups]
+
+# --- Phase 2 비교 구성 (실험 1: Phase 1 inference 2개 = Phase 2 Worker 2개, 2026-11-05) -------------------------------------------
+# comparison-mode.example.yaml 의 patches 블록을 그대로 붙였다. 되돌리려면 이 블록(이 주석부터 파일 끝까지)을 지우거나 이 커밋을 revert 한다.
+# 적용 동안 Phase 1 동기 경로(POST /device/detections)는 503 이고 Phase 2 접수 API(POST /device/detection-jobs)가 쓰인다. 자세한 절차: docs/phase2-comparison-run-2026-11-05.md
+patches:
+  - patch: |-
+      $patch: delete
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: inference
+        namespace: parking-guardian
+  - patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: inference
+        namespace: parking-guardian
+  - patch: |-
+      $patch: delete
+      apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata:
+        name: inference
+        namespace: parking-guardian
+  - patch: |-
+      $patch: delete
+      apiVersion: policy/v1
+      kind: PodDisruptionBudget
+      metadata:
+        name: inference
+        namespace: parking-guardian
+  - patch: |-
+      $patch: delete
+      apiVersion: monitoring.coreos.com/v1
+      kind: PodMonitor
+      metadata:
+        name: inference
+        namespace: parking-guardian
+  - target:
+      kind: ScaledObject
+      name: worker
+    patch: |-
+      - op: replace
+        path: /spec/minReplicaCount
+        value: 2
+      - op: replace
+        path: /spec/maxReplicaCount
+        value: 2
+      - op: replace
+        path: /spec/fallback/replicas
+        value: 2
