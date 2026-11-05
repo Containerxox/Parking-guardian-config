@@ -523,8 +523,10 @@ def check_comparison_mode() -> None:
     left = sorted(f"{k} {n}" for (k, n) in by if n == "inference" and k in removed_kinds)   # ServiceAccount·ConfigMap 은 남아도 해가 없다
     check(left == [], f"inference 의 Deployment·Service·HPA·PDB·PodMonitor 가 없다 (남은 것: {left})")
     so = by[("ScaledObject", "worker")]["spec"]
-    check((so["minReplicaCount"], so["maxReplicaCount"]) == (2, 2), f"Worker 최소 2 / 최대 2 (고정, 자동 확장 없음) — 실제 {so['minReplicaCount']} / {so['maxReplicaCount']}")
-    check(so.get("fallback", {}).get("replicas") == 2, f"KEDA fallback 도 2 — 실제 {so.get('fallback', {}).get('replicas')}")
+    n = so["minReplicaCount"]
+    check(so["minReplicaCount"] == so["maxReplicaCount"] and n in (2, 3, 4),
+          f"Worker 고정형: 최소 = 최대 = N (N 은 2~4, 자동 확장 없음) — 실제 {so['minReplicaCount']} / {so['maxReplicaCount']}")
+    check(so.get("fallback", {}).get("replicas") == n, f"KEDA fallback 도 같은 N({n}) — 실제 {so.get('fallback', {}).get('replicas')}")
     check(all(k in by for k in (("Deployment", "backend"), ("Deployment", "worker"), ("Deployment", "relay"), ("Ingress", "parking-guardian"))),
           "backend·worker·relay·Ingress 는 그대로다")
     problems = reference_problems(objs) + hpa_conflicts(objs, parking_guardian_app()) + scaled_target_problems(objs, parking_guardian_app())

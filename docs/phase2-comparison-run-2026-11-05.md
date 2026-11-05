@@ -48,3 +48,9 @@
 - Worker 3개 + 마이그레이션 Job 은 노드에 들어가지 않는다(배치 계산). 이 패치는 Worker 2개라 들어간다. 이후 배포(이미지 태그 변경)는 Worker 가 2개일 때 가능하다(롤링은 maxSurge 0 / maxUnavailable 1).
 - KEDA fallback 은 Worker 가 이미 떠 있을 때만 효과가 있다. 큐 길이 읽기 오류가 나도 min=2 가 개수를 지킨다.
 - 이 패치로 `kubectl` 직접 조작(scale 등)은 KEDA/Argo 가 되돌린다. 실험 중에는 `p3.py p2-pause` 로 Argo 자동 동기화를 멈추고 backend HPA 를 2/2 로 고정한다.
+
+## 8. Worker 수 바꾸기 (2026-11-05 Worker 확장 검증: 2 → 3)
+- 바꾸는 곳은 `kustomization.yaml` 끝의 patch 블록과 `comparison-mode.example.yaml` 의 ScaledObject 값 세 개뿐이다: `minReplicaCount`, `maxReplicaCount`, `fallback.replicas` — **셋은 항상 같은 N**(2~4). 현재 N = 3.
+- 노드 3대에서 N = 3 은 들어간다(세 번째 Worker 는 node-23, 이 노드에는 Worker 이미지가 아직 없어 첫 기동에 Pull 이 든다). N = 4 는 노드를 하나 더 둔 뒤에만 가능하다(Terraform `node_max_size`, 별도 승인).
+- 푸시 후 확인: `kubectl -n parking-guardian get deploy worker` 가 N/N, `kubectl -n parking-guardian get scaledobject worker -o jsonpath='{.spec.minReplicaCount}/{.spec.maxReplicaCount}'` 가 N/N, `python loadtest/tools/p3.py status --expect p2-comparison` 전부 통과.
+- 되돌리기: 세 값을 2 로 되돌려 푸시(또는 이 변경 커밋을 revert) → Worker 3 → 2. 큐·DLQ 가 0 이고 시험이 끝난 뒤에 한다.
