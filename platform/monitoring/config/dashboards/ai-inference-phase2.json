@@ -1,0 +1,971 @@
+{
+ "uid": "pg2-inference",
+ "title": "Parking Guardian / AI Inference & E2E (Phase 2)",
+ "tags": [
+  "parking-guardian",
+  "phase2"
+ ],
+ "timezone": "Asia/Seoul",
+ "editable": true,
+ "graphTooltip": 1,
+ "refresh": "15s",
+ "time": {
+  "from": "now-1h",
+  "to": "now"
+ },
+ "schemaVersion": 39,
+ "version": 1,
+ "panels": [
+  {
+   "type": "text",
+   "title": "",
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 24,
+    "h": 4
+   },
+   "options": {
+    "mode": "markdown",
+    "content": "**AI Inference & E2E** 사진이 Worker 에서 판정되어 DB 에 저장되기까지. **E2E = 서버 기준**: detection_jobs.received_at(API 가 사진을 받은 서버 시각)부터 Worker 가 판정 트랜잭션을 **커밋한 직후**까지. 장비 시각 기준이 아니고(장비 시계는 믿지 않는다), 증거 사진 복사·알림·SQS 삭제는 포함하지 않는다. **p50/p95/p99 는 히스토그램 버킷 보간 추정값**이다(실측 개별 값이 아님). 사진 1장은 한 번만 센다(재시도·재전달 제외). 큐 대기는 SQS SentTimestamp 기준이라 AWS·Pod 시계 차이만큼 근사다. **No data = 해당 사건 없음 또는 수집 실패(맨 아래 수집 상태 패널로 구분)**."
+   },
+   "id": 1
+  },
+  {
+   "type": "timeseries",
+   "title": "E2E 지연 (서버 기준 접수 → 판정 저장, 추정값)",
+   "description": "5분 창의 버킷 보간 추정값. 점선 10초 = 목표이자 알림 PGE2EP95High 기준. 사진이 없으면 No data.",
+   "gridPos": {
+    "x": 0,
+    "y": 4,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "histogram_quantile(0.50, sum by (le) (rate(pg_job_e2e_seconds_bucket[5m])))",
+     "legendFormat": "p50 (추정)",
+     "refId": "A"
+    },
+    {
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(pg_job_e2e_seconds_bucket[5m])))",
+     "legendFormat": "p95 (추정)",
+     "refId": "B"
+    },
+    {
+     "expr": "histogram_quantile(0.99, sum by (le) (rate(pg_job_e2e_seconds_bucket[5m])))",
+     "legendFormat": "p99 (추정)",
+     "refId": "C"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "dashed"
+      }
+     },
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "transparent",
+        "value": null
+       },
+       {
+        "color": "#d03b3b",
+        "value": 10
+       }
+      ]
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "p50 (추정)"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#86b6ef"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "p95 (추정)"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#2a78d6"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "p99 (추정)"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#104281"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 2
+  },
+  {
+   "type": "timeseries",
+   "title": "10초 이내 판정 비율 (실측 버킷)",
+   "description": "le=10 버킷은 정확한 경계라 보간 없는 실측 비율이다. 사진이 없으면 No data.",
+   "gridPos": {
+    "x": 12,
+    "y": 4,
+    "w": 6,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum(rate(pg_job_e2e_seconds_bucket{le=\"10\"}[5m])) / sum(rate(pg_job_e2e_seconds_count[5m]))",
+     "legendFormat": "10초 이내 비율",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0,
+     "decimals": 2
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "10초 이내 비율"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#0ca30c"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 3
+  },
+  {
+   "type": "timeseries",
+   "title": "처리량 (건/s) — 판정 저장됨",
+   "description": "done = 판정이 DB 에 커밋됨(반영), stale = 판정은 저장했지만 순서 보호로 상태는 안 바꿈. 커밋 뒤에만 센다.",
+   "gridPos": {
+    "x": 18,
+    "y": 4,
+    "w": 6,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum by (outcome) (rate(pg_worker_messages_total{outcome=~\"done|stale\"}[2m]))",
+     "legendFormat": "{{outcome}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "color": {
+      "mode": "palette-classic-by-name",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 4
+  },
+  {
+   "type": "timeseries",
+   "title": "오류·재시도 (건/s)",
+   "description": "retry = 판정 저장 전 실패(저장소·추론·DB), 메시지는 큐에 남아 다시 전달(3회 뒤 DLQ). effects_retry = 판정은 저장됐고 증거 사진·알림만 실패. rejected = 사진 없음/손상(판정 없음). lost_claim = 다른 Worker 가 이어받음.",
+   "gridPos": {
+    "x": 0,
+    "y": 12,
+    "w": 12,
+    "h": 7
+   },
+   "targets": [
+    {
+     "expr": "sum by (outcome) (rate(pg_worker_messages_total{outcome=~\"retry|effects_retry|rejected|lost_claim\"}[2m]))",
+     "legendFormat": "{{outcome}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "color": {
+      "mode": "palette-classic-by-name",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 5
+  },
+  {
+   "type": "timeseries",
+   "title": "Worker 처리 시간 (claim → 처리 끝, 추정값)",
+   "description": "claim 에 성공한 메시지의 사진 읽기 + 추론 + 판정 트랜잭션 + 부수 효과 + 삭제 전체(성공한 건만). 큐 대기는 포함하지 않는다.",
+   "gridPos": {
+    "x": 12,
+    "y": 12,
+    "w": 12,
+    "h": 7
+   },
+   "targets": [
+    {
+     "expr": "histogram_quantile(0.50, sum by (le) (rate(pg_worker_process_seconds_bucket{outcome=\"done\"}[5m])))",
+     "legendFormat": "p50 (추정)",
+     "refId": "A"
+    },
+    {
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(pg_worker_process_seconds_bucket{outcome=\"done\"}[5m])))",
+     "legendFormat": "p95 (추정)",
+     "refId": "B"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "p50 (추정)"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#f6b396"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "p95 (추정)"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#eb6834"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 6
+  },
+  {
+   "type": "timeseries",
+   "title": "큐 대기 (SQS 발행 → Worker 수신, 첫 전달만, 추정값)",
+   "description": "SQS SentTimestamp(AWS 시계)와 Worker 시계의 차이라 근사다. 같은 장비의 앞선 메시지 뒤에서 기다린 시간(FIFO 그룹)도 포함한다. 재전달은 세지 않는다. Relay 가 재발행한 작업의 접수 → 발행 지연은 SQS & Async Pipeline 대시보드에 있다.",
+   "gridPos": {
+    "x": 0,
+    "y": 19,
+    "w": 12,
+    "h": 7
+   },
+   "targets": [
+    {
+     "expr": "histogram_quantile(0.50, sum by (le) (rate(pg_queue_wait_seconds_bucket[5m])))",
+     "legendFormat": "p50 (추정)",
+     "refId": "A"
+    },
+    {
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(pg_queue_wait_seconds_bucket[5m])))",
+     "legendFormat": "p95 (추정)",
+     "refId": "B"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "p50 (추정)"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#86b6ef"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "p95 (추정)"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#2a78d6"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 7
+  },
+  {
+   "type": "timeseries",
+   "title": "추론 단계별 시간 p95 (추정값)",
+   "description": "Worker 프로세스 안 YOLO 단계별 시간(기존 pg_inference_stage_seconds 재사용). 락 대기는 Worker 가 한 번에 한 장이라 거의 0.",
+   "gridPos": {
+    "x": 12,
+    "y": 19,
+    "w": 12,
+    "h": 7
+   },
+   "targets": [
+    {
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(pg_inference_stage_seconds_bucket{job=\"parking-guardian/worker\",stage=\"decode\"}[5m])))",
+     "legendFormat": "디코드",
+     "refId": "A"
+    },
+    {
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(pg_inference_stage_seconds_bucket{job=\"parking-guardian/worker\",stage=\"window\"}[5m])))",
+     "legendFormat": "앞유리 탐지",
+     "refId": "B"
+    },
+    {
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(pg_inference_stage_seconds_bucket{job=\"parking-guardian/worker\",stage=\"sticker\"}[5m])))",
+     "legendFormat": "스티커 탐지",
+     "refId": "C"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "디코드"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#1baf7a"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "앞유리 탐지"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#2a78d6"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "스티커 탐지"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#eb6834"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 8
+  },
+  {
+   "type": "timeseries",
+   "title": "판정 결과 (건/s, 추론 기준)",
+   "description": "추론 호출 결과(ok 는 verdict 별, 실패는 invalid_image·error). DB 저장 전 값이라 재시도되면 같은 사진이 다시 보일 수 있다 — 저장 기준 처리량은 위 '처리량' 패널.",
+   "gridPos": {
+    "x": 0,
+    "y": 26,
+    "w": 8,
+    "h": 7
+   },
+   "targets": [
+    {
+     "expr": "sum by (verdict, outcome) (rate(pg_inference_requests_total{job=\"parking-guardian/worker\"}[5m]))",
+     "legendFormat": "{{verdict}} / {{outcome}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "color": {
+      "mode": "palette-classic-by-name",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 9
+  },
+  {
+   "type": "state-timeline",
+   "title": "모델 준비 상태 (초록 = Ready)",
+   "description": "Worker 는 모델을 읽고 첫 추론까지 마친 뒤에야 큐를 받는다. 빨강 = 아직(로딩 중·실패). 롤링 때 1~2분 빨강은 정상.",
+   "gridPos": {
+    "x": 8,
+    "y": 26,
+    "w": 8,
+    "h": 7
+   },
+   "targets": [
+    {
+     "expr": "max by (pod) (pg_inference_model_state{job=\"parking-guardian/worker\",pg_inference_model_state=\"ready\"})",
+     "legendFormat": "{{pod}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "fillOpacity": 70,
+      "lineWidth": 0
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#d03b3b",
+        "value": null
+       },
+       {
+        "color": "#0ca30c",
+        "value": 1
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "mergeValues": true,
+    "showValue": "never",
+    "rowHeight": 0.8,
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    }
+   },
+   "id": 10
+  },
+  {
+   "type": "timeseries",
+   "title": "모델 로딩 / 첫 추론 시간 (초)",
+   "description": "마지막 성공한 로딩의 디스크 → 메모리 시간과 로딩 직후 첫 추론 시간.",
+   "gridPos": {
+    "x": 16,
+    "y": 26,
+    "w": 8,
+    "h": 7
+   },
+   "targets": [
+    {
+     "expr": "max by (pod) (pg_model_load_seconds{job=\"parking-guardian/worker\"})",
+     "legendFormat": "로딩 {{pod}}",
+     "refId": "A"
+    },
+    {
+     "expr": "max by (pod) (pg_model_first_inference_seconds{job=\"parking-guardian/worker\"})",
+     "legendFormat": "첫 추론 {{pod}}",
+     "refId": "B"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "로딩 {{pod}}"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#eb6834"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "첫 추론 {{pod}}"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#a8431c"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 11
+  },
+  {
+   "type": "state-timeline",
+   "title": "Worker 수집 상태 (초록 = UP)",
+   "description": "Prometheus 가 Worker /metrics 를 긁는 중인가. 빨강 = DOWN, No data = 대상 없음(PodMonitor 미배포). 알림 PGWorkerMetricsMissing.",
+   "gridPos": {
+    "x": 0,
+    "y": 33,
+    "w": 12,
+    "h": 6
+   },
+   "targets": [
+    {
+     "expr": "max by (pod) (up{job=\"parking-guardian/worker\"})",
+     "legendFormat": "{{pod}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "fillOpacity": 70,
+      "lineWidth": 0
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#d03b3b",
+        "value": null
+       },
+       {
+        "color": "#0ca30c",
+        "value": 1
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "mergeValues": true,
+    "showValue": "never",
+    "rowHeight": 0.8,
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    }
+   },
+   "id": 12
+  },
+  {
+   "type": "timeseries",
+   "title": "시간 측정 건너뜀 (최근 1시간, 건)",
+   "description": "시각이 없거나(missing) 시계 차이로 음수(negative)라 E2E·큐 대기 표본에 넣지 않은 건수. 0 이 아니면 위 지연 값은 이만큼 빠진 표본이다.",
+   "gridPos": {
+    "x": 12,
+    "y": 33,
+    "w": 12,
+    "h": 6
+   },
+   "targets": [
+    {
+     "expr": "sum by (metric, reason) (increase(pg_worker_timing_skipped_total[1h]))",
+     "legendFormat": "{{metric}} / {{reason}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "color": {
+      "mode": "palette-classic-by-name",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0,
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 13
+  }
+ ],
+ "templating": {
+  "list": []
+ },
+ "annotations": {
+  "list": []
+ }
+}

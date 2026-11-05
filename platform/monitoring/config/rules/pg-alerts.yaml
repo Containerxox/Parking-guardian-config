@@ -43,6 +43,33 @@ spec:
           annotations:
             summary: "Worker 가 하나도 Ready 가 아니다"
             description: "목표 Worker 가 있는데 Ready 가 0개로 2분 넘게 이어진다. 사진 판정이 멈췄다. 복구: Worker Ready >= 1."
+        # 관측성 3단계: E2E(서버 기준 접수 -> 판정 커밋) p95 가 10초를 넘는 상태가 5분 이어진다 = 사용자가 체감할 만큼 느려졌다(목표 10초).
+        # p95 는 5분 창 버킷 보간 추정값(10~15초 버킷 안에서 보간). 5분 동안 판정이 5건 미만이면 표본이 적어 평가하지 않는다(오탐 방지; 판정이 아예 없는 것은 PGQueueBacklogSustained·PGPipelineOldestJobAge 가 본다).
+        # 오탐: 일시 버스트(실험 2 에서 수 초). for 5m 로 흡수. 복구: p95 <= 10초 또는 표본 5건 미만.
+        - alert: PGE2EP95High
+          expr: |
+            (histogram_quantile(0.95, sum by (le) (rate(pg_job_e2e_seconds_bucket[5m]))) > 10)
+              and
+            (sum(increase(pg_job_e2e_seconds_count[5m])) >= 5)
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "E2E p95 {{ $value | printf \"%.1f\" }}초 (서버 기준 접수 → 판정 저장, 추정값)"
+            description: "사진 접수부터 판정 저장까지 p95 가 10초를 5분 넘게 넘는다. SQS 적체(PGQueueBacklogSustained), Worker Ready·KEDA, 추론 단계별 시간(AI Inference & E2E 대시보드)을 확인한다."
+        # Worker /metrics 를 읽을 수 없다 = 스크레이프 끊김(또는 PodMonitor 없음). Worker 가 목표 1개 이상인데 up==1 인 대상이 없을 때만(Worker 를 일부러 0 으로 줄이면 PGWorkerDown 이 담당).
+        # "지표가 없어서 정상처럼 보이는" 오해를 막는 안전장치(E2E·오류 알림은 지표가 없으면 침묵한다). 복구: 타깃 UP.
+        - alert: PGWorkerMetricsMissing
+          expr: |
+            absent(up{job="parking-guardian/worker"} == 1)
+              and on ()
+            (max(kube_deployment_spec_replicas{namespace="parking-guardian",deployment="worker"}) > 0)
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Worker 지표를 읽을 수 없다"
+            description: "Prometheus 가 Worker /metrics(9102)를 5분 넘게 못 긁는다. PodMonitor worker·Worker Pod 의 metrics 포트를 확인한다. 이 동안 E2E·처리 오류 알림은 판단할 수 없다(지표 없음 != 0)."
     - name: parking-guardian.http
       rules:
         # 5xx 비율이 5% 를 넘는다 = 접수·관리자 API 오류(DB·S3·SQS 연결 문제 등). 헬스체크 라우트는 제외하고 "실제 트래픽" 기준으로 본다.

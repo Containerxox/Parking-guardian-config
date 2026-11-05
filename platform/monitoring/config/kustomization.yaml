@@ -31,6 +31,9 @@ configMapGenerator:
   - name: dashboard-pipeline-phase2 # 관측성 2단계: relay /metrics 필요(PodMonitor relay)
     files:
       - dashboards/pipeline-phase2.json
+  - name: dashboard-ai-inference-phase2 # 관측성 3단계: worker /metrics 필요(PodMonitor worker)
+    files:
+      - dashboards/ai-inference-phase2.json
   # Phase 1 대시보드는 삭제하지 않고 보존한다(동기 /device/detections·추론 락 등 Phase 1 지표 기준). 폴더만 'Phase 1 참고' 로 구분한다.
   - name: dashboard-phase-comparison
     files:

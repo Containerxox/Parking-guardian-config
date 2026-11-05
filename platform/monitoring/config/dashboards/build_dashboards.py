@@ -1,9 +1,9 @@
-"""Grafana 대시보드 JSON 6개를 만든다(Phase 1 용 3개 + Phase 2 용 3개). 손으로 JSON 을 고치지 말고 이 파일을 고친 뒤 다시 실행한다.
+"""Grafana 대시보드 JSON 7개를 만든다(Phase 1 용 3개 + Phase 2 용 4개). 손으로 JSON 을 고치지 말고 이 파일을 고친 뒤 다시 실행한다.
 
     python build_dashboards.py          (이 폴더에서. 표준 라이브러리만 쓴다)
 
 만드는 것: phase-comparison.json(Phase 비교 핵심), resources.json(리소스), inference.json(추론 파이프라인) — Phase 1 용, 폴더 'Parking Guardian (Phase 1 참고)'.
-overview-phase2.json(Service Overview), infrastructure-phase2.json(Infrastructure), pipeline-phase2.json(SQS & Async Pipeline) — Phase 2 용, 폴더 'Parking Guardian (Phase 2)'.
+overview-phase2.json(Service Overview), infrastructure-phase2.json(Infrastructure), pipeline-phase2.json(SQS & Async Pipeline), ai-inference-phase2.json(AI Inference & E2E) — Phase 2 용, 폴더 'Parking Guardian (Phase 2)'.
 kustomization.yaml 의 configMapGenerator 가 이 JSON 들을 ConfigMap 으로 만들고 Grafana sidecar 가 불러온다.
 
 색 규칙(한 번 정해 바꾸지 않는다. 같은 대상은 모든 대시보드에서 같은 색):
@@ -428,11 +428,79 @@ def pipeline_phase2():
     return dashboard("pg2-pipeline", "Parking Guardian / SQS & Async Pipeline (Phase 2)", P, ["parking-guardian", "phase2"], time_from="now-1h")
 
 
+def ai_inference_e2e():
+    """AI Inference & E2E (관측성 3단계): worker /metrics(PodMonitor worker). 값을 알 수 없을 때는 'No data'(0 으로 대체하지 않는다)."""
+    W = 'job="parking-guardian/worker"'
+    P = []
+    P.append(text(
+        "**AI Inference & E2E** 사진이 Worker 에서 판정되어 DB 에 저장되기까지. **E2E = 서버 기준**: detection_jobs.received_at(API 가 사진을 받은 서버 시각)부터 "
+        "Worker 가 판정 트랜잭션을 **커밋한 직후**까지. 장비 시각 기준이 아니고(장비 시계는 믿지 않는다), 증거 사진 복사·알림·SQS 삭제는 포함하지 않는다. "
+        "**p50/p95/p99 는 히스토그램 버킷 보간 추정값**이다(실측 개별 값이 아님). 사진 1장은 한 번만 센다(재시도·재전달 제외). "
+        "큐 대기는 SQS SentTimestamp 기준이라 AWS·Pod 시계 차이만큼 근사다. **No data = 해당 사건 없음 또는 수집 실패(맨 아래 수집 상태 패널로 구분)**.", 0, 0, 24, 4))
+
+    P.append(panel("E2E 지연 (서버 기준 접수 → 판정 저장, 추정값)", [
+        q(f'histogram_quantile(0.50, sum by (le) (rate(pg_job_e2e_seconds_bucket[5m])))', "p50 (추정)", BLUE_LIGHT),
+        q(f'histogram_quantile(0.95, sum by (le) (rate(pg_job_e2e_seconds_bucket[5m])))', "p95 (추정)", BLUE),
+        q(f'histogram_quantile(0.99, sum by (le) (rate(pg_job_e2e_seconds_bucket[5m])))', "p99 (추정)", BLUE_DARK),
+    ], 0, 4, 12, 8, unit="s", thresholds=[10], desc="5분 창의 버킷 보간 추정값. 점선 10초 = 목표이자 알림 PGE2EP95High 기준. 사진이 없으면 No data."))
+    P.append(panel("10초 이내 판정 비율 (실측 버킷)", [
+        q('sum(rate(pg_job_e2e_seconds_bucket{le="10"}[5m])) / sum(rate(pg_job_e2e_seconds_count[5m]))', "10초 이내 비율", GOOD),
+    ], 12, 4, 6, 8, unit="percentunit", decimals=2, legend_calcs=("lastNotNull",),
+        desc="le=10 버킷은 정확한 경계라 보간 없는 실측 비율이다. 사진이 없으면 No data."))
+    P.append(panel("처리량 (건/s) — 판정 저장됨", [
+        q('sum by (outcome) (rate(pg_worker_messages_total{outcome=~"done|stale"}[2m]))', "{{outcome}}", None),
+    ], 18, 4, 6, 8, unit="reqps", color_by_name=True, legend_calcs=("max", "lastNotNull"),
+        desc="done = 판정이 DB 에 커밋됨(반영), stale = 판정은 저장했지만 순서 보호로 상태는 안 바꿈. 커밋 뒤에만 센다."))
+
+    P.append(panel("오류·재시도 (건/s)", [
+        q('sum by (outcome) (rate(pg_worker_messages_total{outcome=~"retry|effects_retry|rejected|lost_claim"}[2m]))', "{{outcome}}", None),
+    ], 0, 12, 12, 7, unit="reqps", color_by_name=True, legend_calcs=("max", "lastNotNull"),
+        desc="retry = 판정 저장 전 실패(저장소·추론·DB), 메시지는 큐에 남아 다시 전달(3회 뒤 DLQ). effects_retry = 판정은 저장됐고 증거 사진·알림만 실패. "
+             "rejected = 사진 없음/손상(판정 없음). lost_claim = 다른 Worker 가 이어받음."))
+    P.append(panel("Worker 처리 시간 (claim → 처리 끝, 추정값)", [
+        q('histogram_quantile(0.50, sum by (le) (rate(pg_worker_process_seconds_bucket{outcome="done"}[5m])))', "p50 (추정)", ORANGE_LIGHT),
+        q('histogram_quantile(0.95, sum by (le) (rate(pg_worker_process_seconds_bucket{outcome="done"}[5m])))', "p95 (추정)", ORANGE),
+    ], 12, 12, 12, 7, unit="s", desc="claim 에 성공한 메시지의 사진 읽기 + 추론 + 판정 트랜잭션 + 부수 효과 + 삭제 전체(성공한 건만). 큐 대기는 포함하지 않는다."))
+
+    P.append(panel("큐 대기 (SQS 발행 → Worker 수신, 첫 전달만, 추정값)", [
+        q('histogram_quantile(0.50, sum by (le) (rate(pg_queue_wait_seconds_bucket[5m])))', "p50 (추정)", BLUE_LIGHT),
+        q('histogram_quantile(0.95, sum by (le) (rate(pg_queue_wait_seconds_bucket[5m])))', "p95 (추정)", BLUE),
+    ], 0, 19, 12, 7, unit="s", desc="SQS SentTimestamp(AWS 시계)와 Worker 시계의 차이라 근사다. 같은 장비의 앞선 메시지 뒤에서 기다린 시간(FIFO 그룹)도 포함한다. "
+                                    "재전달은 세지 않는다. Relay 가 재발행한 작업의 접수 → 발행 지연은 SQS & Async Pipeline 대시보드에 있다."))
+    P.append(panel("추론 단계별 시간 p95 (추정값)", [
+        q(f'histogram_quantile(0.95, sum by (le) (rate(pg_inference_stage_seconds_bucket{{{W},stage="decode"}}[5m])))', "디코드", AQUA),
+        q(f'histogram_quantile(0.95, sum by (le) (rate(pg_inference_stage_seconds_bucket{{{W},stage="window"}}[5m])))', "앞유리 탐지", BLUE),
+        q(f'histogram_quantile(0.95, sum by (le) (rate(pg_inference_stage_seconds_bucket{{{W},stage="sticker"}}[5m])))', "스티커 탐지", ORANGE),
+    ], 12, 19, 12, 7, unit="s", desc="Worker 프로세스 안 YOLO 단계별 시간(기존 pg_inference_stage_seconds 재사용). 락 대기는 Worker 가 한 번에 한 장이라 거의 0."))
+
+    P.append(panel("판정 결과 (건/s, 추론 기준)", [
+        q(f'sum by (verdict, outcome) (rate(pg_inference_requests_total{{{W}}}[5m]))', "{{verdict}} / {{outcome}}", None),
+    ], 0, 26, 8, 7, unit="reqps", color_by_name=True, legend_calcs=("max", "lastNotNull"),
+        desc="추론 호출 결과(ok 는 verdict 별, 실패는 invalid_image·error). DB 저장 전 값이라 재시도되면 같은 사진이 다시 보일 수 있다 — 저장 기준 처리량은 위 '처리량' 패널."))
+    P.append(panel("모델 준비 상태 (초록 = Ready)", [
+        q(f'max by (pod) (pg_inference_model_state{{{W},pg_inference_model_state="ready"}})', "{{pod}}"),
+    ], 8, 26, 8, 7, kind="state-timeline", desc="Worker 는 모델을 읽고 첫 추론까지 마친 뒤에야 큐를 받는다. 빨강 = 아직(로딩 중·실패). 롤링 때 1~2분 빨강은 정상."))
+    P.append(panel("모델 로딩 / 첫 추론 시간 (초)", [
+        q(f'max by (pod) (pg_model_load_seconds{{{W}}})', "로딩 {{pod}}", ORANGE),
+        q(f'max by (pod) (pg_model_first_inference_seconds{{{W}}})', "첫 추론 {{pod}}", ORANGE_DARK),
+    ], 16, 26, 8, 7, unit="s", legend_calcs=("lastNotNull",), desc="마지막 성공한 로딩의 디스크 → 메모리 시간과 로딩 직후 첫 추론 시간."))
+
+    P.append(panel("Worker 수집 상태 (초록 = UP)", [
+        q('max by (pod) (up{job="parking-guardian/worker"})', "{{pod}}"),
+    ], 0, 33, 12, 6, kind="state-timeline", desc="Prometheus 가 Worker /metrics 를 긁는 중인가. 빨강 = DOWN, No data = 대상 없음(PodMonitor 미배포). 알림 PGWorkerMetricsMissing."))
+    P.append(panel("시간 측정 건너뜀 (최근 1시간, 건)", [
+        q('sum by (metric, reason) (increase(pg_worker_timing_skipped_total[1h]))', "{{metric}} / {{reason}}", None),
+    ], 12, 33, 12, 6, unit="short", decimals=0, color_by_name=True, legend_calcs=("lastNotNull",),
+        desc="시각이 없거나(missing) 시계 차이로 음수(negative)라 E2E·큐 대기 표본에 넣지 않은 건수. 0 이 아니면 위 지연 값은 이만큼 빠진 표본이다."))
+
+    return dashboard("pg2-inference", "Parking Guardian / AI Inference & E2E (Phase 2)", P, ["parking-guardian", "phase2"], time_from="now-1h")
+
+
 if __name__ == "__main__":
     here = pathlib.Path(__file__).parent
     for name, build in (("phase-comparison", phase_comparison), ("resources", resources), ("inference", inference),
                         ("overview-phase2", overview_phase2), ("infrastructure-phase2", infrastructure_phase2),
-                        ("pipeline-phase2", pipeline_phase2)):
+                        ("pipeline-phase2", pipeline_phase2), ("ai-inference-phase2", ai_inference_e2e)):
         out = here / f"{name}.json"
         out.write_text(json.dumps(build(), ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
         print("wrote", out.name)

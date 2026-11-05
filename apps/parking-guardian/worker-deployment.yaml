@@ -133,6 +133,12 @@ spec:
           imagePullPolicy: IfNotPresent
           command: ["flask", "judge-worker"] # FLASK_APP=wsgi 는 이미지 ENV. 이미지의 CMD(gunicorn)를 덮어쓴다
 
+          # 관측성 3단계: flask judge-worker 가 METRICS_PORT(앱 기본 9102)에서 /metrics 를 낸다(별도 스레드, 모델 로딩 전에 시작).
+          # worker-podmonitor.yaml 이 이 이름(metrics)으로 15초마다 긁는다. Service 에는 넣지 않는다.
+          ports:
+            - name: metrics
+              containerPort: 9102
+
           # 환경변수 4겹. 같은 키가 여러 곳에 있으면 **뒤에 오는 것이 이긴다**(Kubernetes 규칙):
           #   backend-config  Terraform 출력값 + 공통 고정값(DB_*, S3_BUCKET, SQS_*, STORAGE_BACKEND=s3, DB_SSLMODE …). INFERENCE_BACKEND=http 도 여기 있다
           #   queue-config    QUEUE_BACKEND=sqs

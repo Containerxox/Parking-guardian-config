@@ -1,0 +1,23 @@
+# worker PodMonitor (관측성 3단계): worker Pod 의 metrics 포트(9102)를 15초마다 긁는다. relay-podmonitor.yaml 과 같은 방식.
+# 지표: pg_worker_messages_total(처리 결과), pg_worker_process_seconds, pg_job_e2e_seconds(서버 기준 접수 -> 판정 커밋),
+#       pg_queue_wait_seconds(SQS 발행 -> Worker 수신), pg_inference_*(단계별 시간·판정·모델 상태). 정의: capston 앱 app/metrics.py.
+# job 라벨은 parking-guardian/worker 가 된다(알림 규칙 PGWorkerMetricsMissing 이 up{job="parking-guardian/worker"} 를 본다).
+# CRD(PodMonitor)는 모니터링 앱이 설치한다: SkipDryRunOnMissingResource + Application retry 로 순서를 맞춘다(backend·relay 와 같음).
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: worker
+  namespace: parking-guardian
+  labels:
+    app.kubernetes.io/name: worker
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: worker
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s

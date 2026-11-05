@@ -332,3 +332,115 @@ tests:
             exp_annotations:
               summary: "파이프라인 지표를 읽을 수 없다(Relay 스크레이프·루프 또는 SQS 큐 깊이 조회)"
               description: "Relay /metrics 가 수집되지 않거나, Relay 루프가 멈췄거나, 큐 깊이 조회가 실패한다(sqs:GetQueueAttributes 권한 확인). 이 동안 SQS 적체·DLQ 알림은 판단할 수 없다(지표 없음 != 0)."
+  # =========================== 관측성 3단계: worker 규칙 ===========================
+  # --- PGE2EP95High: 버킷(le=10 에 60%, le=15 에 100%) -> p95 는 10~15 구간(>10) 이고 표본 충분 -> 울림 ---
+  - interval: 1m
+    input_series:
+      - series: 'pg_job_e2e_seconds_bucket{pod="w-a",le="10"}'
+        values: '0+6x15'
+      - series: 'pg_job_e2e_seconds_bucket{pod="w-a",le="15"}'
+        values: '0+10x15'
+      - series: 'pg_job_e2e_seconds_bucket{pod="w-a",le="+Inf"}'
+        values: '0+10x15'
+      - series: 'pg_job_e2e_seconds_count{pod="w-a"}'
+        values: '0+10x15'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: PGE2EP95High
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: PGE2EP95High
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "E2E p95 14.4초 (서버 기준 접수 → 판정 저장, 추정값)"
+              description: "사진 접수부터 판정 저장까지 p95 가 10초를 5분 넘게 넘는다. SQS 적체(PGQueueBacklogSustained), Worker Ready·KEDA, 추론 단계별 시간(AI Inference & E2E 대시보드)을 확인한다."
+  # 모두 10초 안(le=10 에 100%) -> p95 <= 10 -> 침묵
+  - interval: 1m
+    input_series:
+      - series: 'pg_job_e2e_seconds_bucket{pod="w-a",le="10"}'
+        values: '0+10x15'
+      - series: 'pg_job_e2e_seconds_bucket{pod="w-a",le="+Inf"}'
+        values: '0+10x15'
+      - series: 'pg_job_e2e_seconds_count{pod="w-a"}'
+        values: '0+10x15'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: PGE2EP95High
+        exp_alerts: []
+  # 느리지만 표본이 5분에 2건뿐 -> 침묵(표본 부족)
+  - interval: 1m
+    input_series:
+      - series: 'pg_job_e2e_seconds_bucket{pod="w-a",le="10"}'
+        values: '0x15'
+      - series: 'pg_job_e2e_seconds_bucket{pod="w-a",le="15"}'
+        values: '0+0.4x15'
+      - series: 'pg_job_e2e_seconds_bucket{pod="w-a",le="+Inf"}'
+        values: '0+0.4x15'
+      - series: 'pg_job_e2e_seconds_count{pod="w-a"}'
+        values: '0+0.4x15'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: PGE2EP95High
+        exp_alerts: []
+  # 지표가 아예 없으면 이 규칙은 침묵(없음은 PGWorkerMetricsMissing 이 담당)
+  - interval: 1m
+    input_series:
+      - series: 'unrelated_metric{a="b"}'
+        values: '1x15'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: PGE2EP95High
+        exp_alerts: []
+  # --- PGWorkerMetricsMissing ---
+  # (a) Worker 목표 2, 스크레이프 up -> 침묵
+  - interval: 1m
+    input_series:
+      - series: 'up{job="parking-guardian/worker",pod="w-a"}'
+        values: '1x20'
+      - series: 'kube_deployment_spec_replicas{namespace="parking-guardian",deployment="worker"}'
+        values: '2x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: PGWorkerMetricsMissing
+        exp_alerts: []
+  # (b) Worker 목표 2 인데 up 시리즈가 없다 -> 5분 뒤 울림
+  - interval: 1m
+    input_series:
+      - series: 'kube_deployment_spec_replicas{namespace="parking-guardian",deployment="worker"}'
+        values: '2x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: PGWorkerMetricsMissing
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: PGWorkerMetricsMissing
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "Worker 지표를 읽을 수 없다"
+              description: "Prometheus 가 Worker /metrics(9102)를 5분 넘게 못 긁는다. PodMonitor worker·Worker Pod 의 metrics 포트를 확인한다. 이 동안 E2E·처리 오류 알림은 판단할 수 없다(지표 없음 != 0)."
+  # (c) up 이 0(DOWN)이어도 울린다
+  - interval: 1m
+    input_series:
+      - series: 'up{job="parking-guardian/worker",pod="w-a"}'
+        values: '0x20'
+      - series: 'kube_deployment_spec_replicas{namespace="parking-guardian",deployment="worker"}'
+        values: '2x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PGWorkerMetricsMissing
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "Worker 지표를 읽을 수 없다"
+              description: "Prometheus 가 Worker /metrics(9102)를 5분 넘게 못 긁는다. PodMonitor worker·Worker Pod 의 metrics 포트를 확인한다. 이 동안 E2E·처리 오류 알림은 판단할 수 없다(지표 없음 != 0)."
+  # (d) Worker 를 일부러 0 으로 줄였다(목표 0) -> 침묵(PGWorkerDown 담당)
+  - interval: 1m
+    input_series:
+      - series: 'kube_deployment_spec_replicas{namespace="parking-guardian",deployment="worker"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: PGWorkerMetricsMissing
+        exp_alerts: []
