@@ -1,0 +1,87 @@
+# Parking Guardian 알림 규칙 1단계 (2026-11-06). 이미 수집 중인 지표(kube-state-metrics, backend /metrics)만 쓴다.
+# 평가 주기는 Prometheus 기본(evaluationInterval 30s). Alertmanager 라우팅·Slack 은 platform/monitoring/values.yaml 의 alertmanager.config.
+# 승인 웹훅이 꺼져 있어(values.yaml) 적용 때 문법 검증이 없다 -> 커밋 전에 promtool check rules 로 반드시 검사한다.
+#
+# severity 는 두 단계만: critical(바로 사람이 봐야 함, 1시간마다 반복) / warning(4시간마다 반복).
+# 한 규칙의 for 는 "일시적인 정상 동작(배포·새 Pod 기동·버스트)을 오탐으로 올리지 않는" 시간이다. 각 규칙의 오탐 가능성과 복구 조건은 annotations 에 적었다.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: pg-platform-alerts
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: parking-guardian
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  groups:
+    - name: parking-guardian.worker
+      rules:
+        # Worker 가 목표 개수보다 적게 Ready 이다 = 사진 판정 처리 용량 부족(큐 적체·E2E 악화로 이어진다).
+        # 오탐: Worker 롤링·새 Pod 기동은 모델 로딩이 있어 보통 1~2분 걸린다 -> for 5m 로 흡수. 복구: Ready 수 >= 목표(spec) 가 되면 자동 해소.
+        - alert: PGWorkerNotReady
+          expr: |
+            kube_deployment_status_replicas_ready{namespace="parking-guardian",deployment="worker"}
+              < on (namespace, deployment)
+            kube_deployment_spec_replicas{namespace="parking-guardian",deployment="worker"}
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Worker Ready 부족: {{ $value }}개 Ready (목표보다 적음)"
+            description: "worker Deployment 의 Ready Pod 가 목표(spec)보다 5분 넘게 적다. 사진 판정 용량이 줄어 큐가 쌓일 수 있다. kubectl -n parking-guardian get pods -l app.kubernetes.io/name=worker"
+        # Worker 가 하나도 Ready 가 아니다 = 판정이 전혀 처리되지 않는다(접수는 계속되어 큐에 쌓인다). 위 경고와 alertname 이 달라 둘 다 울린다(critical 이 먼저 눈에 띈다).
+        # 복구: Ready >= 1 이 되면 자동 해소.
+        - alert: PGWorkerDown
+          expr: |
+            (kube_deployment_status_replicas_ready{namespace="parking-guardian",deployment="worker"} == 0)
+              and on (namespace, deployment)
+            (kube_deployment_spec_replicas{namespace="parking-guardian",deployment="worker"} > 0)
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Worker 가 하나도 Ready 가 아니다"
+            description: "목표 Worker 가 있는데 Ready 가 0개로 2분 넘게 이어진다. 사진 판정이 멈췄다. 복구: Worker Ready >= 1."
+    - name: parking-guardian.http
+      rules:
+        # 5xx 비율이 5% 를 넘는다 = 접수·관리자 API 오류(DB·S3·SQS 연결 문제 등). 헬스체크 라우트는 제외하고 "실제 트래픽" 기준으로 본다.
+        # 오탐: 트래픽이 거의 없을 때 비율이 튄다 -> 분모(요청률)가 0.2 req/s 를 넘을 때만. 배포 중 짧은 503 -> for 5m.
+        # 복구: 5분 평균 오류율이 5% 아래로 내려가면 자동 해소.
+        - alert: PGHttp5xxRateHigh
+          expr: |
+            (
+              sum(rate(http_request_duration_seconds_count{namespace="parking-guardian",status=~"5..",route!~".*/(healthz|readyz)"}[5m]))
+              /
+              sum(rate(http_request_duration_seconds_count{namespace="parking-guardian",route!~".*/(healthz|readyz)"}[5m]))
+            ) > 0.05
+            and
+            sum(rate(http_request_duration_seconds_count{namespace="parking-guardian",route!~".*/(healthz|readyz)"}[5m])) > 0.2
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "HTTP 5xx 오류율 {{ $value | humanizePercentage }} (5분 평균)"
+            description: "backend 의 5xx 비율이 5% 를 5분 넘게 초과했다(요청률 0.2 req/s 이상일 때만 평가). 접수가 실패하면 장비가 같은 event_id 로 재시도한다. kubectl -n parking-guardian logs deploy/backend"
+    - name: parking-guardian.pods
+      rules:
+        # 컨테이너가 15분 안에 3번 이상 재시작했다 = CrashLoop·OOMKilled. 배포(롤링)는 재시작이 아니라 새 Pod 이므로 이 지표를 올리지 않는다.
+        # 복구: 15분 창 안의 재시작이 2번 이하가 되면 해소(창이 지나가면 자동).
+        - alert: PGPodCrashLooping
+          expr: increase(kube_pod_container_status_restarts_total{namespace="parking-guardian"}[15m]) > 2
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.pod }}/{{ $labels.container }} 가 15분 안에 {{ $value | printf \"%.0f\" }}번 재시작"
+            description: "OOMKilled 또는 반복 실패 가능성. kubectl -n parking-guardian describe pod {{ $labels.pod }} 와 이전 로그(--previous)를 확인한다."
+        # Pod 가 10분 넘게 Pending 이다 = 스케줄할 자리가 없다(노드 CPU 요청 한계·노드 장애).
+        # 오탐: 새 Pod 가 막 만들어진 뒤 잠깐 Pending -> for 10m. 복구: 모든 Pod 가 Pending 에서 벗어남.
+        - alert: PGPodPending
+          expr: sum by (namespace, pod) (kube_pod_status_phase{namespace="parking-guardian",phase="Pending"}) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.pod }} 가 10분 넘게 Pending"
+            description: "스케줄되지 못했다(노드 CPU 요청이 가득 찼거나 노드 문제). kubectl -n parking-guardian describe pod {{ $labels.pod }} 의 Events 를 확인한다."

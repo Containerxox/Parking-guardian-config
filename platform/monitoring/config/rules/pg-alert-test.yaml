@@ -1,0 +1,26 @@
+# 통제된 Firing/Resolved 시험용 규칙. 평소에는 아무 일도 하지 않는다(스위치 ConfigMap 이 없으므로 표현식이 빈 결과).
+# 시험: kubectl -n monitoring create configmap pg-alert-test-switch  -> 약 1분 안에 Slack 에 [FIRING] PGAlertPipelineTest
+#       kubectl -n monitoring delete configmap pg-alert-test-switch  -> 약 2분 안에 [RESOLVED]
+# 운영 Pod·데이터·큐를 건드리지 않는다. 절차 전체: docs/observability-stage1.md
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: pg-alert-pipeline-test
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: parking-guardian
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  groups:
+    - name: parking-guardian.alert-pipeline-test
+      rules:
+        - alert: PGAlertPipelineTest
+          expr: kube_configmap_info{namespace="monitoring",configmap="pg-alert-test-switch"}
+          for: 0m
+          labels:
+            severity: info
+            test: "true"
+          annotations:
+            summary: "알림 경로 시험(Firing)"
+            description: "ConfigMap pg-alert-test-switch 가 있어 시험 알림이 울린다. 삭제하면 Resolved 가 온다. 장애가 아니다."

@@ -7,8 +7,67 @@
 fullnameOverride: monitoring # 리소스 이름을 짧게: monitoring-grafana, monitoring-kube-state-metrics, prometheus-monitoring-prometheus-0 ...
 
 # --- 쓰지 않는 것 ---
+# --- Alertmanager (2026-11-06, 관측성 1단계) ---
+# 알림 규칙(platform/monitoring/config/rules/)이 Firing 하면 Slack 으로 보낸다. Prometheus 는 이 Alertmanager 를 자동으로 목적지로 등록한다.
+# Slack Incoming Webhook URL 은 비밀이다: Secrets Manager parking-guardian/slack -> ESO -> Secret monitoring/slack-webhook(키 url).
+#   Alertmanager 에는 그 Secret 을 파일로 마운트하고(secrets: [slack-webhook] -> /etc/alertmanager/secrets/slack-webhook/url) 설정에는 파일 경로(api_url_file)만 적는다.
+#   이 파일(Git)에는 URL 이 없다. Secret 이 없으면 Alertmanager Pod 가 ContainerCreating 에서 기다린다(Grafana 와 같은 패턴) -> 배포 순서: docs/observability-stage1.md.
+# 자원: 메모리 요청·상한 + 아주 작은 CPU 요청(alertmanager 10m, config-reloader 5m. 아래 이유 참고). 저장 볼륨 없음(침묵 설정은 재시작에 사라져도 된다).
+# 라우팅(운영 정의): critical = 1시간마다 다시 알림, warning = 4시간마다, test=true(통제된 시험 알림) = 10초 안에 보냄. 같은 alertname 의 critical 이 warning 을 억제한다.
 alertmanager:
-  enabled: false # 알림 수신자가 없다. 알람은 Phase 1 설계대로 CloudWatch 5개가 맡는다
+  enabled: true
+  alertmanagerSpec:
+    replicas: 1
+    retention: 120h
+    secrets:
+      - slack-webhook
+    # CPU 요청은 작게(10m + config-reloader 5m)만 둔다: 요청이 0 이면 노드가 포화일 때(Worker 추론이 코어를 쓰는 부하·장애 상황) cpu.shares 가 최소값이라
+    # 알림 전송이 가장 늦어질 수 있다. 노드 CPU 요청률 90~95% 인 노드에도 15m 는 들어가고(남은 여유 90m·190m·1275m), 스케줄러는 요청률이 낮은 노드를 먼저 고른다.
+    # CPU limit 은 두지 않는다(기존 원칙). config-reloader 는 Operator 가 만든 컨테이너라 containers 의 같은 이름 항목으로 덮어쓴다(전략적 병합).
+    resources:
+      requests: { cpu: 10m, memory: 64Mi }
+      limits: { memory: 128Mi }
+    containers:
+      - name: config-reloader
+        resources:
+          requests: { cpu: 5m }
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      receiver: slack
+      group_by: [alertname, severity]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      routes:
+        - matchers: ['test="true"']
+          receiver: slack
+          group_wait: 10s
+          group_interval: 1m
+          repeat_interval: 1h
+        - matchers: ['severity="critical"']
+          receiver: slack
+          repeat_interval: 1h
+        - matchers: ['severity="warning"']
+          receiver: slack
+          repeat_interval: 4h
+    inhibit_rules:
+      - source_matchers: ['severity="critical"']
+        target_matchers: ['severity="warning"']
+        equal: [alertname]
+    receivers:
+      - name: slack
+        slack_configs:
+          - send_resolved: true
+            api_url_file: /etc/alertmanager/secrets/slack-webhook/url
+            title: '[{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] {{ .CommonLabels.alertname }} ({{ .CommonLabels.severity }})'
+            text: |-
+              {{ range .Alerts -}}
+              *{{ .Labels.alertname }}* — {{ .Annotations.summary }}
+              {{ .Annotations.description }}
+              {{ if .Labels.test }}_(통제된 시험 알림)_{{ end }}
+              {{ end }}
 defaultRules:
   create: false # 기본 경보 규칙 수십 개. Alertmanager 가 없으면 평가만 하고 버린다 → Prometheus 메모리만 쓴다
 prometheusOperator:

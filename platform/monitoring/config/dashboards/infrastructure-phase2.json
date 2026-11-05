@@ -1,0 +1,606 @@
+{
+ "uid": "pg2-infra",
+ "title": "Parking Guardian / Infrastructure (Phase 2)",
+ "tags": [
+  "parking-guardian",
+  "phase2"
+ ],
+ "timezone": "Asia/Seoul",
+ "editable": true,
+ "graphTooltip": 1,
+ "refresh": "15s",
+ "time": {
+  "from": "now-1h",
+  "to": "now"
+ },
+ "schemaVersion": 39,
+ "version": 1,
+ "panels": [
+  {
+   "type": "text",
+   "title": "",
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 24,
+    "h": 3
+   },
+   "options": {
+    "mode": "markdown",
+    "content": "**Infrastructure (Phase 2)** 노드와 앱 Pod 의 CPU·메모리, 스케줄 가능성(CPU 요청률), 재시작·Pending. RDS(연결·CPU·크레딧)는 CloudWatch 연동(4단계, 선택) 후 이 대시보드에 추가한다 — 지금은 Prometheus 에 RDS 지표가 없다."
+   },
+   "id": 1
+  },
+  {
+   "type": "timeseries",
+   "title": "노드 CPU 사용률",
+   "description": "",
+   "gridPos": {
+    "x": 0,
+    "y": 3,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "1 - avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[2m]))",
+     "legendFormat": "{{instance}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit",
+     "color": {
+      "mode": "palette-classic-by-name",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0,
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 2
+  },
+  {
+   "type": "timeseries",
+   "title": "노드 메모리 사용률",
+   "description": "점선 90%.",
+   "gridPos": {
+    "x": 8,
+    "y": 3,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)",
+     "legendFormat": "{{instance}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit",
+     "color": {
+      "mode": "palette-classic-by-name",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "dashed"
+      }
+     },
+     "min": 0,
+     "decimals": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "transparent",
+        "value": null
+       },
+       {
+        "color": "#d03b3b",
+        "value": 0.9
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 3
+  },
+  {
+   "type": "timeseries",
+   "title": "노드 CPU 요청 / allocatable",
+   "description": "스케줄러는 요청 합이 allocatable 을 넘는 노드에 Pod 를 올리지 않는다. 100% 근처에 새 Worker(요청 1코어)가 뜰 자리는 없다.",
+   "gridPos": {
+    "x": 16,
+    "y": 3,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum by (node) (kube_pod_container_resource_requests{resource=\"cpu\"}) / on (node) kube_node_status_allocatable{resource=\"cpu\"}",
+     "legendFormat": "{{node}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit",
+     "color": {
+      "mode": "palette-classic-by-name",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "dashed"
+      }
+     },
+     "min": 0,
+     "decimals": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "transparent",
+        "value": null
+       },
+       {
+        "color": "#d03b3b",
+        "value": 1
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 4
+  },
+  {
+   "type": "timeseries",
+   "title": "앱 CPU 사용 (코어, Pod 별)",
+   "description": "backend·worker·relay·frontend. Worker 는 추론 중 1코어 근처(요청 1코어).",
+   "gridPos": {
+    "x": 0,
+    "y": 11,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"parking-guardian\", container=~\"backend|worker|relay|frontend\"}[2m]))",
+     "legendFormat": "{{pod}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "color": {
+      "mode": "palette-classic-by-name",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0,
+     "decimals": 2
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 5
+  },
+  {
+   "type": "timeseries",
+   "title": "앱 메모리 working set (Pod 별)",
+   "description": "Worker 는 모델로 약 0.9 GiB(limit 2 GiB), backend 약 0.15 GiB.",
+   "gridPos": {
+    "x": 12,
+    "y": 11,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=\"parking-guardian\", container=~\"backend|worker|relay|frontend\"})",
+     "legendFormat": "{{pod}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "bytes",
+     "color": {
+      "mode": "palette-classic-by-name",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 6
+  },
+  {
+   "type": "timeseries",
+   "title": "Pending / NotReady Pod",
+   "description": "Pending 이 10분 넘으면 알림 PGPodPending.",
+   "gridPos": {
+    "x": 0,
+    "y": 19,
+    "w": 8,
+    "h": 7
+   },
+   "targets": [
+    {
+     "expr": "sum(kube_pod_status_phase{namespace=\"parking-guardian\", phase=\"Pending\"}) or vector(0)",
+     "legendFormat": "Pending",
+     "refId": "A"
+    },
+    {
+     "expr": "count(kube_pod_status_ready{namespace=\"parking-guardian\", condition=\"false\"} == 1) or vector(0)",
+     "legendFormat": "NotReady",
+     "refId": "B"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0,
+     "decimals": 0
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Pending"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#eda100"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "NotReady"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#d03b3b"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 7
+  },
+  {
+   "type": "timeseries",
+   "title": "컨테이너 재시작 (최근 1시간 증가분)",
+   "description": "",
+   "gridPos": {
+    "x": 8,
+    "y": 19,
+    "w": 8,
+    "h": 7
+   },
+   "targets": [
+    {
+     "expr": "sum by (pod, container) (increase(kube_pod_container_status_restarts_total{namespace=\"parking-guardian\"}[1h]))",
+     "legendFormat": "{{pod}}/{{container}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "color": {
+      "mode": "palette-classic-by-name",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0,
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 8
+  },
+  {
+   "type": "timeseries",
+   "title": "수집 대상 상태 (DOWN 개수)",
+   "description": "Prometheus 가 스크레이프하지 못하는 대상. 0 이어야 한다. 수집이 끊기면 알림도 믿을 수 없다.",
+   "gridPos": {
+    "x": 16,
+    "y": 19,
+    "w": 8,
+    "h": 7
+   },
+   "targets": [
+    {
+     "expr": "count(up == 0) or vector(0)",
+     "legendFormat": "DOWN 타깃",
+     "refId": "A"
+    },
+    {
+     "expr": "count(up == 1)",
+     "legendFormat": "UP 타깃",
+     "refId": "B"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0,
+     "decimals": 0
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "DOWN 타깃"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#d03b3b"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "UP 타깃"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#0ca30c"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 9
+  }
+ ],
+ "templating": {
+  "list": []
+ },
+ "annotations": {
+  "list": []
+ }
+}

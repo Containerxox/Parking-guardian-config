@@ -1,8 +1,9 @@
-"""Grafana 대시보드 JSON 3개를 만든다. 손으로 JSON 을 고치지 말고 이 파일을 고친 뒤 다시 실행한다.
+"""Grafana 대시보드 JSON 5개를 만든다(Phase 1 용 3개 + Phase 2 용 2개). 손으로 JSON 을 고치지 말고 이 파일을 고친 뒤 다시 실행한다.
 
     python build_dashboards.py          (이 폴더에서. 표준 라이브러리만 쓴다)
 
-만드는 것: phase-comparison.json(Phase 비교 핵심), resources.json(리소스), inference.json(추론 파이프라인).
+만드는 것: phase-comparison.json(Phase 비교 핵심), resources.json(리소스), inference.json(추론 파이프라인) — Phase 1 용, 폴더 'Parking Guardian (Phase 1 참고)'.
+overview-phase2.json(Service Overview), infrastructure-phase2.json(Infrastructure) — Phase 2 용, 폴더 'Parking Guardian (Phase 2)'.
 kustomization.yaml 의 configMapGenerator 가 이 JSON 들을 ConfigMap 으로 만들고 Grafana sidecar 가 불러온다.
 
 색 규칙(한 번 정해 바꾸지 않는다. 같은 대상은 모든 대시보드에서 같은 색):
@@ -256,9 +257,120 @@ def inference():
     return dashboard("pg-inference", "Parking Guardian / 추론 파이프라인", P, ["parking-guardian", "phase1"])
 
 
+# ---------------------------------------------------------------------------
+# Phase 2 (2026-11-06 관측성 1단계): 이미 수집 중인 지표(backend /metrics, kube-state-metrics, cAdvisor, node-exporter)만 쓴다.
+# relay·worker 지표(큐 깊이, E2E 등)는 2·3단계에서 앱 계측과 함께 별도 대시보드로 추가한다.
+# ---------------------------------------------------------------------------
+P2_GENERAL = 'route!~"/api/v1/device/.*|.*/healthz|.*/readyz|unmatched"'   # 관리자 UI 가 쓰는 라우트
+P2_INTAKE = 'route="/api/v1/device/detection-jobs"'                     # 사진 접수(202). 판정은 Worker 가 나중에 한다
+P2_HEARTBEAT = 'route="/api/v1/device/heartbeat"'
+P2_TRAFFIC = 'route!~".*/(healthz|readyz)"'                              # 헬스체크를 뺀 실제 트래픽(알림 규칙 PGHttp5xxRateHigh 와 같은 정의)
+APP_PODS = 'container=~"backend|worker|relay|frontend"'
+
+
+def overview_phase2():
+    P = []
+    P.append(text(
+        "**Service Overview (Phase 2)** 위에서 아래로: ① 접수(장비→backend, 202 = 접수 성공이며 판정은 Worker 가 나중에 한다) → ② 응답 시간 → ③ 오류 → ④ 앱별 Ready·재시작. "
+        "큐 깊이·E2E 는 relay/worker 계측(2·3단계) 후 `SQS & Async Pipeline` 에 추가된다. 아래 값은 모두 이미 수집 중인 지표다.", 0, 0, 24, 3))
+
+    P.append(panel("① 사진 접수 (req/s, 상태 코드별)", [
+        q(f'sum by (status) (rate(http_request_duration_seconds_count{{{NS}, {P2_INTAKE}}}[1m]))', "{{status}}", None),
+    ], 0, 3, 8, 8, unit="reqps", color_by_name=True,
+        desc="202 = 새 접수, 200 = 같은 event_id 의 중복(재시도), 4xx = 요청 오류, 503 = 접수 실패(저장·DB). 202 가 장비 도착률이다."))
+    P.append(panel("① Heartbeat (req/s)", [
+        q(f'sum(rate(http_request_duration_seconds_count{{{NS}, {P2_HEARTBEAT}}}[1m])) or vector(0)', "heartbeat", GREEN),
+    ], 8, 3, 8, 8, unit="reqps", desc="장비 1대 = 분당 1회. 장비 N대면 약 N/60 req/s."))
+    P.append(panel("① 관리자 API 요청률 (req/s)", [
+        q(f'sum(rate(http_request_duration_seconds_count{{{NS}, {P2_GENERAL}}}[1m])) or vector(0)', "관리자 API", BLUE),
+    ], 16, 3, 8, 8, unit="reqps"))
+
+    P.append(panel("② 사진 접수 응답 시간 (장비 관점)", [
+        q(hist_quantile(0.5, "http_request_duration_seconds", f'{NS}, {P2_INTAKE}'), "p50", ORANGE_LIGHT),
+        q(hist_quantile(0.95, "http_request_duration_seconds", f'{NS}, {P2_INTAKE}'), "p95", ORANGE),
+        q(hist_quantile(0.99, "http_request_duration_seconds", f'{NS}, {P2_INTAKE}'), "p99", ORANGE_DARK),
+    ], 0, 11, 8, 8, unit="s", desc="접수(검증 + S3 업로드 + DB + SQS 발행 요청)까지. 판정(E2E)은 이 값에 들어가지 않는다. 히스토그램 분위수는 버킷 보간 값이다."))
+    P.append(panel("② Heartbeat 응답 시간", [
+        q(hist_quantile(0.95, "http_request_duration_seconds", f'{NS}, {P2_HEARTBEAT}'), "p95", GREEN),
+        q(hist_quantile(0.99, "http_request_duration_seconds", f'{NS}, {P2_HEARTBEAT}'), "p99", BLUE_DARK),
+    ], 8, 11, 8, 8, unit="s", thresholds=[0.5], desc="점선 0.5s = 목표(p95)."))
+    P.append(panel("② 관리자 API 응답 시간", [
+        q(hist_quantile(0.5, "http_request_duration_seconds", f'{NS}, {P2_GENERAL}'), "p50", BLUE_LIGHT),
+        q(hist_quantile(0.95, "http_request_duration_seconds", f'{NS}, {P2_GENERAL}'), "p95", BLUE),
+        q(hist_quantile(0.99, "http_request_duration_seconds", f'{NS}, {P2_GENERAL}'), "p99", BLUE_DARK),
+    ], 16, 11, 8, 8, unit="s", thresholds=[0.5], desc="점선 0.5s = 목표(p95). 요청이 없는 구간은 비는 것이 맞다."))
+
+    P.append(panel("③ 5xx 비율 (전체 트래픽)", [
+        q(f'(sum(rate(http_request_duration_seconds_count{{{NS}, status=~"5..", {P2_TRAFFIC}}}[5m])) or vector(0)) / sum(rate(http_request_duration_seconds_count{{{NS}, {P2_TRAFFIC}}}[5m]))',
+          "5xx / 전체", CRITICAL),
+    ], 0, 19, 8, 7, unit="percentunit", thresholds=[0.05], desc="점선 5% = 알림 PGHttp5xxRateHigh 임계값(5분 평균, 요청률 0.2 req/s 이상일 때만 알림)."))
+    P.append(panel("③ 5xx / 4xx (req/s, 라우트별)", [
+        q(f'sum by (route) (rate(http_request_duration_seconds_count{{{NS}, status=~"5..", {P2_TRAFFIC}}}[2m]))', "5xx {{route}}", CRITICAL),
+        q(f'sum by (route) (rate(http_request_duration_seconds_count{{{NS}, status=~"4..", {P2_TRAFFIC}}}[2m]))', "4xx {{route}}", YELLOW),
+    ], 8, 19, 8, 7, unit="reqps", legend_calcs=("max", "lastNotNull"), desc="오류가 어느 라우트에서 나는지. 4xx 는 대부분 로그인 실패·권한(정상 동작)이다."))
+    P.append(panel("③ 처리 중인 요청 수 (backend 전체)", [
+        q(f'sum(http_requests_in_flight{{{NS}}})', "in flight", BLUE),
+    ], 16, 19, 8, 7, unit="short", decimals=0, desc="Pod 당 gunicorn 스레드 8개(복제 수를 곱해 읽는다). 상한에 붙으면 요청이 대기한다."))
+
+    P.append(panel("④ 앱별 Ready Pod 수 (목표 대비)", [
+        q(f'sum by (deployment) (kube_deployment_status_replicas_ready{{{NS}}})', "Ready {{deployment}}", None),
+        q(f'sum by (deployment) (kube_deployment_spec_replicas{{{NS}}})', "목표 {{deployment}}", None, **{"custom.lineStyle": {"fill": "dash", "dash": [10, 10]}}),
+    ], 0, 26, 8, 8, unit="short", decimals=0, color_by_name=True, legend_calcs=("lastNotNull",), desc="실선 = Ready, 점선 = 목표(spec). Worker 가 목표보다 낮으면 알림 PGWorkerNotReady."))
+    P.append(panel("④ Worker: KEDA/HPA 현재·목표 replica", [
+        q(f'kube_horizontalpodautoscaler_status_current_replicas{{{NS}, horizontalpodautoscaler="keda-hpa-worker"}}', "현재", BLUE),
+        q(f'kube_horizontalpodautoscaler_status_desired_replicas{{{NS}, horizontalpodautoscaler="keda-hpa-worker"}}', "목표", ORANGE),
+        q(f'kube_horizontalpodautoscaler_spec_max_replicas{{{NS}, horizontalpodautoscaler="keda-hpa-worker"}}', "최대", BLUE_LIGHT),
+    ], 8, 26, 8, 8, unit="short", decimals=0, legend_calcs=("lastNotNull",), desc="기본 구성은 고정 2(min=max=2). 확장 실험 때만 움직인다."))
+    P.append(panel("④ 컨테이너 재시작 (최근 1시간 증가분)", [
+        q(f'sum by (pod, container) (increase(kube_pod_container_status_restarts_total{{{NS}}}[1h]))', "{{pod}}/{{container}}", None),
+    ], 16, 26, 8, 8, unit="short", decimals=0, color_by_name=True, legend_calcs=("max", "lastNotNull"), desc="0 이어야 한다. 15분 안에 3번 넘으면 알림 PGPodCrashLooping."))
+
+    return dashboard("pg2-overview", "Parking Guardian / Service Overview (Phase 2)", P, ["parking-guardian", "phase2"], time_from="now-1h")
+
+
+def infrastructure_phase2():
+    P = []
+    P.append(text(
+        "**Infrastructure (Phase 2)** 노드와 앱 Pod 의 CPU·메모리, 스케줄 가능성(CPU 요청률), 재시작·Pending. "
+        "RDS(연결·CPU·크레딧)는 CloudWatch 연동(4단계, 선택) 후 이 대시보드에 추가한다 — 지금은 Prometheus 에 RDS 지표가 없다.", 0, 0, 24, 3))
+
+    P.append(panel("노드 CPU 사용률", [
+        q('1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[2m]))', "{{instance}}"),
+    ], 0, 3, 8, 8, unit="percentunit", color_by_name=True, decimals=0))
+    P.append(panel("노드 메모리 사용률", [
+        q('1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)', "{{instance}}"),
+    ], 8, 3, 8, 8, unit="percentunit", color_by_name=True, decimals=0, thresholds=[0.9], desc="점선 90%."))
+    P.append(panel("노드 CPU 요청 / allocatable", [
+        q('sum by (node) (kube_pod_container_resource_requests{resource="cpu"}) / on (node) kube_node_status_allocatable{resource="cpu"}', "{{node}}"),
+    ], 16, 3, 8, 8, unit="percentunit", color_by_name=True, decimals=0, thresholds=[1],
+        desc="스케줄러는 요청 합이 allocatable 을 넘는 노드에 Pod 를 올리지 않는다. 100% 근처에 새 Worker(요청 1코어)가 뜰 자리는 없다."))
+
+    P.append(panel("앱 CPU 사용 (코어, Pod 별)", [
+        q(f'sum by (pod) (rate(container_cpu_usage_seconds_total{{{NS}, {APP_PODS}}}[2m]))', "{{pod}}"),
+    ], 0, 11, 12, 8, unit="short", decimals=2, color_by_name=True, desc="backend·worker·relay·frontend. Worker 는 추론 중 1코어 근처(요청 1코어)."))
+    P.append(panel("앱 메모리 working set (Pod 별)", [
+        q(f'sum by (pod) (container_memory_working_set_bytes{{{NS}, {APP_PODS}}})', "{{pod}}"),
+    ], 12, 11, 12, 8, unit="bytes", color_by_name=True, desc="Worker 는 모델로 약 0.9 GiB(limit 2 GiB), backend 약 0.15 GiB."))
+
+    P.append(panel("Pending / NotReady Pod", [
+        q(f'sum(kube_pod_status_phase{{{NS}, phase="Pending"}}) or vector(0)', "Pending", YELLOW),
+        q(f'count(kube_pod_status_ready{{{NS}, condition="false"}} == 1) or vector(0)', "NotReady", CRITICAL),
+    ], 0, 19, 8, 7, unit="short", decimals=0, legend_calcs=("max", "lastNotNull"), desc="Pending 이 10분 넘으면 알림 PGPodPending."))
+    P.append(panel("컨테이너 재시작 (최근 1시간 증가분)", [
+        q(f'sum by (pod, container) (increase(kube_pod_container_status_restarts_total{{{NS}}}[1h]))', "{{pod}}/{{container}}"),
+    ], 8, 19, 8, 7, unit="short", decimals=0, color_by_name=True, legend_calcs=("max", "lastNotNull")))
+    P.append(panel("수집 대상 상태 (DOWN 개수)", [
+        q('count(up == 0) or vector(0)', "DOWN 타깃", CRITICAL),
+        q('count(up == 1)', "UP 타깃", GOOD),
+    ], 16, 19, 8, 7, unit="short", decimals=0, legend_calcs=("lastNotNull",), desc="Prometheus 가 스크레이프하지 못하는 대상. 0 이어야 한다. 수집이 끊기면 알림도 믿을 수 없다."))
+
+    return dashboard("pg2-infra", "Parking Guardian / Infrastructure (Phase 2)", P, ["parking-guardian", "phase2"], time_from="now-1h")
+
+
 if __name__ == "__main__":
     here = pathlib.Path(__file__).parent
-    for name, build in (("phase-comparison", phase_comparison), ("resources", resources), ("inference", inference)):
+    for name, build in (("phase-comparison", phase_comparison), ("resources", resources), ("inference", inference),
+                        ("overview-phase2", overview_phase2), ("infrastructure-phase2", infrastructure_phase2)):
         out = here / f"{name}.json"
         out.write_text(json.dumps(build(), ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
         print("wrote", out.name)

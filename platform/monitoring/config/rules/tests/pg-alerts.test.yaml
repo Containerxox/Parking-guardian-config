@@ -1,0 +1,150 @@
+# promtool 단위 시험: 가짜 시계열을 넣어 "울려야 할 때 울리고 아닐 때는 안 울리는지" 본다(클러스터 무관).
+# 실행(rules/ 폴더에서):  python tests/extract_rules.py && promtool test rules tests/pg-alerts.test.yaml
+rule_files:
+  - ../build/pg-rules.yaml
+evaluation_interval: 1m
+tests:
+  # --- PGWorkerNotReady: 목표 2, Ready 1 이 계속 -> 5분이 지나야 warning. Ready 2 면 침묵 ---
+  - interval: 1m
+    input_series:
+      - series: 'kube_deployment_status_replicas_ready{namespace="parking-guardian",deployment="worker"}'
+        values: '1x12'
+      - series: 'kube_deployment_spec_replicas{namespace="parking-guardian",deployment="worker"}'
+        values: '2x12'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: PGWorkerNotReady
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: PGWorkerNotReady
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: parking-guardian, deployment: worker}
+            exp_annotations:
+              summary: "Worker Ready 부족: 1개 Ready (목표보다 적음)"
+              description: "worker Deployment 의 Ready Pod 가 목표(spec)보다 5분 넘게 적다. 사진 판정 용량이 줄어 큐가 쌓일 수 있다. kubectl -n parking-guardian get pods -l app.kubernetes.io/name=worker"
+  - interval: 1m
+    input_series:
+      - series: 'kube_deployment_status_replicas_ready{namespace="parking-guardian",deployment="worker"}'
+        values: '2x12'
+      - series: 'kube_deployment_spec_replicas{namespace="parking-guardian",deployment="worker"}'
+        values: '2x12'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PGWorkerNotReady
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: PGWorkerDown
+        exp_alerts: []
+  # --- PGWorkerDown: 목표 2, Ready 0 이 2분 넘게 -> critical ---
+  - interval: 1m
+    input_series:
+      - series: 'kube_deployment_status_replicas_ready{namespace="parking-guardian",deployment="worker"}'
+        values: '0x10'
+      - series: 'kube_deployment_spec_replicas{namespace="parking-guardian",deployment="worker"}'
+        values: '2x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: PGWorkerDown
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: PGWorkerDown
+        exp_alerts:
+          - exp_labels: {severity: critical, namespace: parking-guardian, deployment: worker}
+            exp_annotations:
+              summary: "Worker 가 하나도 Ready 가 아니다"
+              description: "목표 Worker 가 있는데 Ready 가 0개로 2분 넘게 이어진다. 사진 판정이 멈췄다. 복구: Worker Ready >= 1."
+  # --- PGHttp5xxRateHigh: 10 req/s 중 1 req/s(10%) 가 5xx -> 5분 뒤 critical ---
+  - interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_count{namespace="parking-guardian",route="/api/v1/device/detection-jobs",status="202"}'
+        values: '0+540x15'
+      - series: 'http_request_duration_seconds_count{namespace="parking-guardian",route="/api/v1/device/detection-jobs",status="503"}'
+        values: '0+60x15'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: PGHttp5xxRateHigh
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: "HTTP 5xx 오류율 10% (5분 평균)"
+              description: "backend 의 5xx 비율이 5% 를 5분 넘게 초과했다(요청률 0.2 req/s 이상일 때만 평가). 접수가 실패하면 장비가 같은 event_id 로 재시도한다. kubectl -n parking-guardian logs deploy/backend"
+  # 저트래픽(0.1 req/s)에서 절반이 5xx 여도 울리지 않는다(최소 트래픽 조건)
+  - interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_count{namespace="parking-guardian",route="/api/v1/device/detection-jobs",status="202"}'
+        values: '0+3x15'
+      - series: 'http_request_duration_seconds_count{namespace="parking-guardian",route="/api/v1/device/detection-jobs",status="503"}'
+        values: '0+3x15'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: PGHttp5xxRateHigh
+        exp_alerts: []
+  # 오류율 2% 는 울리지 않는다. 헬스체크 라우트의 5xx 는 제외된다
+  - interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_count{namespace="parking-guardian",route="/api/v1/device/detection-jobs",status="202"}'
+        values: '0+588x15'
+      - series: 'http_request_duration_seconds_count{namespace="parking-guardian",route="/api/v1/device/detection-jobs",status="503"}'
+        values: '0+12x15'
+      - series: 'http_request_duration_seconds_count{namespace="parking-guardian",route="/api/v1/healthz",status="503"}'
+        values: '0+600x15'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: PGHttp5xxRateHigh
+        exp_alerts: []
+  # --- PGPodCrashLooping: 분당 1번씩 재시작(15분에 15번) -> 울림. 재시작이 멈추면(상수) 안 울림 ---
+  - interval: 1m
+    input_series:
+      - series: 'kube_pod_container_status_restarts_total{namespace="parking-guardian",pod="worker-x",container="worker"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: PGPodCrashLooping
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: parking-guardian, pod: worker-x, container: worker}
+            exp_annotations:
+              summary: "worker-x/worker 가 15분 안에 15번 재시작"
+              description: "OOMKilled 또는 반복 실패 가능성. kubectl -n parking-guardian describe pod worker-x 와 이전 로그(--previous)를 확인한다."
+  - interval: 1m
+    input_series:
+      - series: 'kube_pod_container_status_restarts_total{namespace="parking-guardian",pod="backend-x",container="backend"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: PGPodCrashLooping
+        exp_alerts: []
+  # --- PGPodPending: Pending 12분 -> 울림(10분 뒤), 5분 Pending 은 안 울림, 풀리면 해소 ---
+  - interval: 1m
+    input_series:
+      - series: 'kube_pod_status_phase{namespace="parking-guardian",pod="worker-new",phase="Pending"}'
+        values: '1x12 0x5'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: PGPodPending
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: PGPodPending
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: parking-guardian, pod: worker-new}
+            exp_annotations:
+              summary: "worker-new 가 10분 넘게 Pending"
+              description: "스케줄되지 못했다(노드 CPU 요청이 가득 찼거나 노드 문제). kubectl -n parking-guardian describe pod worker-new 의 Events 를 확인한다."
+      - eval_time: 16m
+        alertname: PGPodPending
+        exp_alerts: []
+  # --- PGAlertPipelineTest: 스위치 ConfigMap 이 있으면 즉시 울리고, 없으면 침묵 ---
+  - interval: 1m
+    input_series:
+      - series: 'kube_configmap_info{namespace="monitoring",configmap="pg-alert-test-switch"}'
+        values: '1x3 _x5'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: PGAlertPipelineTest
+        exp_alerts:
+          - exp_labels: {severity: info, test: "true", namespace: monitoring, configmap: pg-alert-test-switch}
+            exp_annotations:
+              summary: "알림 경로 시험(Firing)"
+              description: "ConfigMap pg-alert-test-switch 가 있어 시험 알림이 울린다. 삭제하면 Resolved 가 온다. 장애가 아니다."
+      - eval_time: 8m
+        alertname: PGAlertPipelineTest
+        exp_alerts: []

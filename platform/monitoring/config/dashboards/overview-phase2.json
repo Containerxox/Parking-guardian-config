@@ -1,0 +1,1102 @@
+{
+ "uid": "pg2-overview",
+ "title": "Parking Guardian / Service Overview (Phase 2)",
+ "tags": [
+  "parking-guardian",
+  "phase2"
+ ],
+ "timezone": "Asia/Seoul",
+ "editable": true,
+ "graphTooltip": 1,
+ "refresh": "15s",
+ "time": {
+  "from": "now-1h",
+  "to": "now"
+ },
+ "schemaVersion": 39,
+ "version": 1,
+ "panels": [
+  {
+   "type": "text",
+   "title": "",
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 24,
+    "h": 3
+   },
+   "options": {
+    "mode": "markdown",
+    "content": "**Service Overview (Phase 2)** 위에서 아래로: ① 접수(장비→backend, 202 = 접수 성공이며 판정은 Worker 가 나중에 한다) → ② 응답 시간 → ③ 오류 → ④ 앱별 Ready·재시작. 큐 깊이·E2E 는 relay/worker 계측(2·3단계) 후 `SQS & Async Pipeline` 에 추가된다. 아래 값은 모두 이미 수집 중인 지표다."
+   },
+   "id": 1
+  },
+  {
+   "type": "timeseries",
+   "title": "① 사진 접수 (req/s, 상태 코드별)",
+   "description": "202 = 새 접수, 200 = 같은 event_id 의 중복(재시도), 4xx = 요청 오류, 503 = 접수 실패(저장·DB). 202 가 장비 도착률이다.",
+   "gridPos": {
+    "x": 0,
+    "y": 3,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum by (status) (rate(http_request_duration_seconds_count{namespace=\"parking-guardian\", route=\"/api/v1/device/detection-jobs\"}[1m]))",
+     "legendFormat": "{{status}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "color": {
+      "mode": "palette-classic-by-name",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 2
+  },
+  {
+   "type": "timeseries",
+   "title": "① Heartbeat (req/s)",
+   "description": "장비 1대 = 분당 1회. 장비 N대면 약 N/60 req/s.",
+   "gridPos": {
+    "x": 8,
+    "y": 3,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum(rate(http_request_duration_seconds_count{namespace=\"parking-guardian\", route=\"/api/v1/device/heartbeat\"}[1m])) or vector(0)",
+     "legendFormat": "heartbeat",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "heartbeat"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#008300"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 3
+  },
+  {
+   "type": "timeseries",
+   "title": "① 관리자 API 요청률 (req/s)",
+   "description": "",
+   "gridPos": {
+    "x": 16,
+    "y": 3,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum(rate(http_request_duration_seconds_count{namespace=\"parking-guardian\", route!~\"/api/v1/device/.*|.*/healthz|.*/readyz|unmatched\"}[1m])) or vector(0)",
+     "legendFormat": "관리자 API",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "관리자 API"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#2a78d6"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 4
+  },
+  {
+   "type": "timeseries",
+   "title": "② 사진 접수 응답 시간 (장비 관점)",
+   "description": "접수(검증 + S3 업로드 + DB + SQS 발행 요청)까지. 판정(E2E)은 이 값에 들어가지 않는다. 히스토그램 분위수는 버킷 보간 값이다.",
+   "gridPos": {
+    "x": 0,
+    "y": 11,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "histogram_quantile(0.5, sum by (le) (rate(http_request_duration_seconds_bucket{namespace=\"parking-guardian\", route=\"/api/v1/device/detection-jobs\"}[2m])))",
+     "legendFormat": "p50",
+     "refId": "A"
+    },
+    {
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace=\"parking-guardian\", route=\"/api/v1/device/detection-jobs\"}[2m])))",
+     "legendFormat": "p95",
+     "refId": "B"
+    },
+    {
+     "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{namespace=\"parking-guardian\", route=\"/api/v1/device/detection-jobs\"}[2m])))",
+     "legendFormat": "p99",
+     "refId": "C"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "p50"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#f6b396"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "p95"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#eb6834"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "p99"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#a8431c"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 5
+  },
+  {
+   "type": "timeseries",
+   "title": "② Heartbeat 응답 시간",
+   "description": "점선 0.5s = 목표(p95).",
+   "gridPos": {
+    "x": 8,
+    "y": 11,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace=\"parking-guardian\", route=\"/api/v1/device/heartbeat\"}[2m])))",
+     "legendFormat": "p95",
+     "refId": "A"
+    },
+    {
+     "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{namespace=\"parking-guardian\", route=\"/api/v1/device/heartbeat\"}[2m])))",
+     "legendFormat": "p99",
+     "refId": "B"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "dashed"
+      }
+     },
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "transparent",
+        "value": null
+       },
+       {
+        "color": "#d03b3b",
+        "value": 0.5
+       }
+      ]
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "p95"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#008300"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "p99"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#104281"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 6
+  },
+  {
+   "type": "timeseries",
+   "title": "② 관리자 API 응답 시간",
+   "description": "점선 0.5s = 목표(p95). 요청이 없는 구간은 비는 것이 맞다.",
+   "gridPos": {
+    "x": 16,
+    "y": 11,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "histogram_quantile(0.5, sum by (le) (rate(http_request_duration_seconds_bucket{namespace=\"parking-guardian\", route!~\"/api/v1/device/.*|.*/healthz|.*/readyz|unmatched\"}[2m])))",
+     "legendFormat": "p50",
+     "refId": "A"
+    },
+    {
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace=\"parking-guardian\", route!~\"/api/v1/device/.*|.*/healthz|.*/readyz|unmatched\"}[2m])))",
+     "legendFormat": "p95",
+     "refId": "B"
+    },
+    {
+     "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{namespace=\"parking-guardian\", route!~\"/api/v1/device/.*|.*/healthz|.*/readyz|unmatched\"}[2m])))",
+     "legendFormat": "p99",
+     "refId": "C"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "dashed"
+      }
+     },
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "transparent",
+        "value": null
+       },
+       {
+        "color": "#d03b3b",
+        "value": 0.5
+       }
+      ]
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "p50"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#86b6ef"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "p95"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#2a78d6"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "p99"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#104281"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 7
+  },
+  {
+   "type": "timeseries",
+   "title": "③ 5xx 비율 (전체 트래픽)",
+   "description": "점선 5% = 알림 PGHttp5xxRateHigh 임계값(5분 평균, 요청률 0.2 req/s 이상일 때만 알림).",
+   "gridPos": {
+    "x": 0,
+    "y": 19,
+    "w": 8,
+    "h": 7
+   },
+   "targets": [
+    {
+     "expr": "(sum(rate(http_request_duration_seconds_count{namespace=\"parking-guardian\", status=~\"5..\", route!~\".*/(healthz|readyz)\"}[5m])) or vector(0)) / sum(rate(http_request_duration_seconds_count{namespace=\"parking-guardian\", route!~\".*/(healthz|readyz)\"}[5m]))",
+     "legendFormat": "5xx / 전체",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "dashed"
+      }
+     },
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "transparent",
+        "value": null
+       },
+       {
+        "color": "#d03b3b",
+        "value": 0.05
+       }
+      ]
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "5xx / 전체"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#d03b3b"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 8
+  },
+  {
+   "type": "timeseries",
+   "title": "③ 5xx / 4xx (req/s, 라우트별)",
+   "description": "오류가 어느 라우트에서 나는지. 4xx 는 대부분 로그인 실패·권한(정상 동작)이다.",
+   "gridPos": {
+    "x": 8,
+    "y": 19,
+    "w": 8,
+    "h": 7
+   },
+   "targets": [
+    {
+     "expr": "sum by (route) (rate(http_request_duration_seconds_count{namespace=\"parking-guardian\", status=~\"5..\", route!~\".*/(healthz|readyz)\"}[2m]))",
+     "legendFormat": "5xx {{route}}",
+     "refId": "A"
+    },
+    {
+     "expr": "sum by (route) (rate(http_request_duration_seconds_count{namespace=\"parking-guardian\", status=~\"4..\", route!~\".*/(healthz|readyz)\"}[2m]))",
+     "legendFormat": "4xx {{route}}",
+     "refId": "B"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "5xx {{route}}"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#d03b3b"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "4xx {{route}}"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#eda100"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 9
+  },
+  {
+   "type": "timeseries",
+   "title": "③ 처리 중인 요청 수 (backend 전체)",
+   "description": "Pod 당 gunicorn 스레드 8개(복제 수를 곱해 읽는다). 상한에 붙으면 요청이 대기한다.",
+   "gridPos": {
+    "x": 16,
+    "y": 19,
+    "w": 8,
+    "h": 7
+   },
+   "targets": [
+    {
+     "expr": "sum(http_requests_in_flight{namespace=\"parking-guardian\"})",
+     "legendFormat": "in flight",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0,
+     "decimals": 0
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "in flight"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#2a78d6"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 10
+  },
+  {
+   "type": "timeseries",
+   "title": "④ 앱별 Ready Pod 수 (목표 대비)",
+   "description": "실선 = Ready, 점선 = 목표(spec). Worker 가 목표보다 낮으면 알림 PGWorkerNotReady.",
+   "gridPos": {
+    "x": 0,
+    "y": 26,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"parking-guardian\"})",
+     "legendFormat": "Ready {{deployment}}",
+     "refId": "A"
+    },
+    {
+     "expr": "sum by (deployment) (kube_deployment_spec_replicas{namespace=\"parking-guardian\"})",
+     "legendFormat": "목표 {{deployment}}",
+     "refId": "B"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "color": {
+      "mode": "palette-classic-by-name",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0,
+     "decimals": 0
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "목표 {{deployment}}"
+      },
+      "properties": [
+       {
+        "id": "custom.lineStyle",
+        "value": {
+         "fill": "dash",
+         "dash": [
+          10,
+          10
+         ]
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 11
+  },
+  {
+   "type": "timeseries",
+   "title": "④ Worker: KEDA/HPA 현재·목표 replica",
+   "description": "기본 구성은 고정 2(min=max=2). 확장 실험 때만 움직인다.",
+   "gridPos": {
+    "x": 8,
+    "y": 26,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "kube_horizontalpodautoscaler_status_current_replicas{namespace=\"parking-guardian\", horizontalpodautoscaler=\"keda-hpa-worker\"}",
+     "legendFormat": "현재",
+     "refId": "A"
+    },
+    {
+     "expr": "kube_horizontalpodautoscaler_status_desired_replicas{namespace=\"parking-guardian\", horizontalpodautoscaler=\"keda-hpa-worker\"}",
+     "legendFormat": "목표",
+     "refId": "B"
+    },
+    {
+     "expr": "kube_horizontalpodautoscaler_spec_max_replicas{namespace=\"parking-guardian\", horizontalpodautoscaler=\"keda-hpa-worker\"}",
+     "legendFormat": "최대",
+     "refId": "C"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0,
+     "decimals": 0
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "현재"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#2a78d6"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "목표"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#eb6834"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "최대"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#86b6ef"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 12
+  },
+  {
+   "type": "timeseries",
+   "title": "④ 컨테이너 재시작 (최근 1시간 증가분)",
+   "description": "0 이어야 한다. 15분 안에 3번 넘으면 알림 PGPodCrashLooping.",
+   "gridPos": {
+    "x": 16,
+    "y": 26,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum by (pod, container) (increase(kube_pod_container_status_restarts_total{namespace=\"parking-guardian\"}[1h]))",
+     "legendFormat": "{{pod}}/{{container}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "color": {
+      "mode": "palette-classic-by-name",
+      "fixedColor": "#2a78d6"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "pointSize": 4,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "min": 0,
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 13
+  }
+ ],
+ "templating": {
+  "list": []
+ },
+ "annotations": {
+  "list": []
+ }
+}
