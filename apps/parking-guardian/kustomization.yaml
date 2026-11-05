@@ -334,7 +334,7 @@ patches:
         value: 2
       - op: replace
         path: /spec/maxReplicaCount
-        value: 4
+        value: 2
       - op: replace
         path: /spec/fallback/replicas
         value: 2
