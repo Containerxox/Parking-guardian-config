@@ -82,3 +82,29 @@
 - Relay 루프 정지(마지막 회차 시각이 120초 넘게 갱신 안 됨)
 - 큐 깊이 조회(GetQueueAttributes) 한 번도 성공 못함 또는 마지막 성공이 180초 넘게 stale
 - 지표 없음 ≠ 0: 조회 실패 시 `pg_queue_messages` 시리즈를 지워 "0 = 정상" 으로 오해하지 않게 한다. 이 상태에서는 적체·DLQ 알림을 판단할 수 없다.
+
+## 11. 실제 배포·수집 검증 결과 (2026-11-06 03:45~03:55 KST, 읽기 전용)
+
+**GitOps**
+- 앱 커밋 `7f4456b`, config `e8024c6`(CI 태그 커밋) → `e84ff2b`(관측성 2단계). config HEAD = origin/main = `e84ff2b`.
+- Argo: `parking-guardian`, `monitoring-config`, `platform`, `root` 모두 Synced/Healthy, 적용 리비전 `e84ff2b`. (`monitoring`·`keda` 는 멀티 소스 앱이라 리비전 필드가 비어 있고 Synced/Healthy.)
+- ECR(profile `parking-guardian`): backend·inference·worker 에 태그 `7f4456b` 확인(2026-11-06 03:37~03:42 KST). frontend 도 `7f4456b` 이미지를 Pod 가 사용 중. 실행 중 이미지: backend·relay(backend 이미지)·frontend·worker 모두 `7f4456b`. CI 실행 목록 조회(`gh`)는 이 PC 에 없어 하지 못했고, 위 ECR 태그와 config 태그 커밋으로 성공을 확인했다.
+- Deployment: Backend 2/2, Worker 2/2, Relay 1/1, Frontend 1/1. 모든 Pod 재시작 0, 마이그레이션 Job Completed. monitoring 네임스페이스 Pod 재시작 0.
+- 큐: SQS 메인·DLQ 모두 0/0(visible·not_visible·delayed). `pg_jobs` 4개 상태 모두 0. 코드·Terraform·AWS·운영 데이터·로컬 실험 결과는 건드리지 않았다.
+
+**Prometheus**
+- PodMonitor `relay`(parking-guardian) 생성, 타깃 `parking-guardian/relay` UP, 스크레이프 2.6ms, 오류 없음.
+- 시리즈 존재: `pg_queue_messages`(main·dlq × visible·not_visible·delayed = 6개, 값 0), `pg_jobs`(pending_publish·queued·processing·dead_lettered = 4개, 값 0), `pg_oldest_open_job_age_seconds`(0), `pg_relay_publish_total`(success·failure 0), `pg_relay_publish_delay_seconds_*`(count 0), `pg_sqs_api_errors_total`(send·receive_dead_letters·get_queue_attributes 0).
+- 신선도: 마지막 회차 시각은 스크레이프 시점 기준 1.4초 이내, 큐 깊이 마지막 성공은 12초 이내(15초 주기). 30분 구간 SQS 오류 증가 0.
+- **빈 큐(0)와 수집 실패 구분**: 빈 큐는 시리즈가 *존재하고 값이 0*이다. 수집 실패라면 시리즈가 사라지거나(No data) 신선도 시각이 멈춘다. 지금은 시리즈 6개가 존재하고 신선도가 최신이므로 정상적인 0이다. 발행 지연 분위수는 재발행이 없어 NaN(No data)이며 이는 "해당 사건 없음"이다.
+- 참고: backend Pod 도 같은 `pg_*` 지표를 0 으로 미리 만들어 낸다(코드 공유). 알림 식이 `max` 라 영향 없고, relay 큐 조회가 멈추면 오히려 stale 조건으로 울리는 안전한 방향이다.
+
+**Grafana·알림**
+- 대시보드 `Parking Guardian / SQS & Async Pipeline (Phase 2)`(uid `pg2-pipeline`, 폴더 Parking Guardian (Phase 2)) 등록, 패널 12개(설명 텍스트 1 + 데이터 11). 모든 쿼리 Prometheus 에서 success 로 평가, 시리즈 수 1~4(발행 지연은 NaN).
+- PrometheusRule `pipeline` 그룹 규칙 health=ok: PGDLQHasMessages, PGQueueBacklogSustained, PGPipelineOldestJobAge, PGPipelineMetricsMissing 모두 inactive(+ 1단계 테스트 규칙 `PGAlertPipelineTest` inactive). firing 알림 0건.
+- Alertmanager 설정의 Slack receiver·`api_url_file` 유지, ExternalSecret `slack-webhook`·`grafana-admin` SecretSynced.
+
+**운영 안정성**
+- Relay 로그에 AccessDenied·오류·예외 0건(`metrics server listening on :9102`). `get_queue_attributes` 오류 0 → IAM 정상.
+- Relay CPU 5m·메모리 97Mi, 처리 루프 지연 없음(회차 시각 1.4초 이내), 스크레이프 2.6ms.
+- 한계: 배포 후 약 5~10분 관찰이다. 부하 중 값(적체·발행 지연·DLQ)은 이번에 검증하지 않았다(새 부하·장애 주입 금지). 이는 실제 트래픽이 생길 때 확인한다.
