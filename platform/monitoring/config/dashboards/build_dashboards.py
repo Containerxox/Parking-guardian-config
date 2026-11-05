@@ -444,9 +444,9 @@ def ai_inference_e2e():
         q(f'histogram_quantile(0.99, sum by (le) (rate(pg_job_e2e_seconds_bucket[5m])))', "p99 (추정)", BLUE_DARK),
     ], 0, 4, 12, 8, unit="s", thresholds=[10], desc="5분 창의 버킷 보간 추정값. 점선 10초 = 목표이자 알림 PGE2EP95High 기준. 사진이 없으면 No data."))
     P.append(panel("10초 이내 판정 비율 (실측 버킷)", [
-        q('sum(rate(pg_job_e2e_seconds_bucket{le="10"}[5m])) / sum(rate(pg_job_e2e_seconds_count[5m]))', "10초 이내 비율", GOOD),
+        q('sum(rate(pg_job_e2e_seconds_bucket{le="10.0"}[5m])) / sum(rate(pg_job_e2e_seconds_count[5m]))', "10초 이내 비율", GOOD),
     ], 12, 4, 6, 8, unit="percentunit", decimals=2, legend_calcs=("lastNotNull",),
-        desc="le=10 버킷은 정확한 경계라 보간 없는 실측 비율이다. 사진이 없으면 No data."))
+        desc="le 10.0 버킷(prometheus_client 는 경계를 10.0 으로 표기한다)은 정확한 경계라 보간 없는 실측 비율이다. 사진이 없으면 No data."))
     P.append(panel("처리량 (건/s) — 판정 저장됨", [
         q('sum by (outcome) (rate(pg_worker_messages_total{outcome=~"done|stale"}[2m]))', "{{outcome}}", None),
     ], 18, 4, 6, 8, unit="reqps", color_by_name=True, legend_calcs=("max", "lastNotNull"),

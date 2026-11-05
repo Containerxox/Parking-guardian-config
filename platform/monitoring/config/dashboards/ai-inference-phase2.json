@@ -161,7 +161,7 @@
   {
    "type": "timeseries",
    "title": "10초 이내 판정 비율 (실측 버킷)",
-   "description": "le=10 버킷은 정확한 경계라 보간 없는 실측 비율이다. 사진이 없으면 No data.",
+   "description": "le 10.0 버킷(prometheus_client 는 경계를 10.0 으로 표기한다)은 정확한 경계라 보간 없는 실측 비율이다. 사진이 없으면 No data.",
    "gridPos": {
     "x": 12,
     "y": 4,
@@ -170,7 +170,7 @@
    },
    "targets": [
     {
-     "expr": "sum(rate(pg_job_e2e_seconds_bucket{le=\"10\"}[5m])) / sum(rate(pg_job_e2e_seconds_count[5m]))",
+     "expr": "sum(rate(pg_job_e2e_seconds_bucket{le=\"10.0\"}[5m])) / sum(rate(pg_job_e2e_seconds_count[5m]))",
      "legendFormat": "10초 이내 비율",
      "refId": "A"
     }

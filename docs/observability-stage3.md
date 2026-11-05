@@ -102,3 +102,58 @@ E2E 지연 p50/p95/p99(추정, 10초 점선) · 10초 이내 비율(실측 버�
 - Argo `parking-guardian` Synced/Healthy 리비전 `e6e1296`. Backend 2/2, Worker 2/2, Relay 1/1, Frontend 1/1 모두 `b7ac1b5`, Pod 재시작 0.
 - Worker 두 Pod 로그: `YOLOv5 models loaded in 6.0s / 4.7s`, `judge-worker ... ready: attempts=1 load_seconds=7.1/5.8 first_inference_seconds=1.10/0.92`, `metrics server listening` 각 1회. Relay 로그 오류 0. SQS 메인·DLQ 0/0, `dead_lettered` 0, firing 알림 0.
 - 아직 config 3단계 변경(PodMonitor·규칙·대시보드)은 올라가지 않았다(Worker 포트는 이미지만 열려 있고 Pod 선언에는 아직 없음 — PodMonitor 가 포트 이름 `metrics` 를 쓰므로 config 적용 후 Pod 가 한 번 더 교체된다).
+
+## 9. 실제 배포·수집 검증 결과 (2026-11-06 04:2x~04:3x KST, 읽기 전용)
+
+**GitOps·Worker**
+- config 커밋 `9f0e78b`: 로컬 HEAD = origin/main = Argo 적용 리비전(`parking-guardian`, `monitoring-config`). 둘 다 Synced/Healthy, `platform`·`root`·`keda`·`monitoring` 도 Synced/Healthy.
+- PodMonitor `worker` 생성. Worker 는 포트 선언 변경으로 한 번 더 롤링되어 새 Pod 2개(`worker-6586977c94-*`), 둘 다 Ready·`b7ac1b5` 이미지, 재시작 0. 두 Pod 로그: `metrics server listening on :9102`, `ready: attempts=1 load_seconds=6.31/6.13 first_inference_seconds=1.04/1.04`, 오류·경고 0. Backend 2/2, Relay 1/1, Frontend 1/1 (`b7ac1b5`), 재시작 0. Relay 로그 오류 0.
+- SQS 메인·DLQ 0/0(전 상태 0), `dead_lettered` 0. 운영 데이터·실험 결과는 건드리지 않았다.
+
+**Prometheus**
+- 타깃 `parking-guardian/worker` 2개 모두 UP(오류 없음, 스크레이프 3~6 ms).
+- 존재(값 0): `pg_worker_messages_total` 9 outcome × 2 Pod = 18 시리즈, `pg_job_e2e_seconds_count`·`pg_queue_wait_seconds_count` 각 2, `pg_worker_timing_skipped_total` 8. 모델: `pg_inference_model_state{ready}`=1 (2 Pod), `pg_model_load_seconds` 5.1/5.0초, `pg_model_first_inference_seconds` 1.04초.
+- **시리즈 없음 = 트래픽 없음(수집 실패 아님)**: `pg_worker_process_seconds_*`(outcome 라벨이 첫 관측에 생김)와 `pg_inference_stage_seconds_*`(stage 라벨이 첫 추론에 생김)는 이번 구간에 판정이 한 건도 없어 아직 시리즈가 없다. 같은 스크레이프에서 다른 시리즈가 나오고 `up`=1 이므로 수집은 정상이다. 수집 실패라면 `up` 이 0/없음이고 `pg_worker_messages_total` 같은 사전 노출 시리즈도 사라진다.
+- 기존 이미지 롤링으로 Worker 카운터가 0 으로 초기화됐다(Pod 새로 생성).
+
+**Grafana·알림**
+- 대시보드 `AI Inference & E2E (Phase 2)`(uid `pg2-inference`) 등록, 패널 13개(설명 1 + 데이터 12), 모든 쿼리가 Prometheus 에서 success. 결과 없음(No data): 처리 시간, 추론 단계별, 판정 결과, 10초 이내 비율 — 모두 판정 표본이 아직 없어서(위 설명). 모델 상태·수집 상태·로딩 시간·건너뜀·큐 대기/E2E(시리즈 존재) 등은 데이터 있음.
+- 기존 대시보드 6개 보존: Phase 2 폴더(Overview, Infrastructure, SQS & Async Pipeline) + Phase 1 참고 폴더(Phase 비교, 리소스, 추론 파이프라인).
+- 규칙 `PGE2EP95High`, `PGWorkerMetricsMissing` health=ok·Inactive, firing/pending 알림 0. Alertmanager Slack receiver(`api_url_file`)·라우팅 유지, ExternalSecret `slack-webhook`·`grafana-admin` SecretSynced.
+
+**자원 영향**: Worker 메모리 887~918 Mi / CPU 1m(이전 885~932 Mi, 변화 없음 — 모델이 대부분), Relay 97 Mi, Backend 약 90 Mi, Prometheus 429 Mi. 새 지표로 인한 눈에 띄는 증가 없음.
+
+**남은 검증**: 실제 사진이 처리될 때의 `done`·E2E·큐 대기·처리 시간·추론 단계 값과 `PGE2EP95High` 평가는 트래픽이 있어야 확인된다(이번에는 부하·메시지 주입을 하지 않음). Slack 수신은 사용자가 직접 확인.
+
+## 10. 정상 사진 4장 기능 검증 (2026-11-06 04:36~04:40 KST)
+
+성능 시험이 아니라 새 지표가 실제 처리에서 정확히 기록되는지 보는 기능 검증이다. EXP2 장비 `EXP2-M-0001`(machines id 15) 1대, 허용 사진(`sample_a`) 4장(3초 간격), 사용자가 `exp2_smoke.py --photos 4 --yes-run` 으로 전송. 처리 전후 값은 `capston/docs/measurements/exp2/2026-11-06-obs3-smoke/` 의 `metrics-before.json`·`metrics-after.json`·`baseline.json`.
+
+**처리 결과(DB 읽기 전용)**: 작업 4건 모두 `done`, 결과 4건 모두 `permitted`·`applied`, `claim_attempt` 최대 1(재시도 없음), 오류 기록 0, **Worker 두 Pod 모두 사용**(workers=2). S3 `inbox/m-15/` 에 4개(19:37:00~19:37:10 UTC), 위반·알림 불변. DB 기준 접수→결과 행 시각차 평균 1.258초(최대 1.395초).
+
+**지표 증가량 vs 실제 4장**
+
+| 지표 | 처리 전 | 처리 후 | 증가 | 판정 |
+|---|---|---|---|---|
+| `pg_worker_messages_total{outcome="done"}` | 0 | 4 | **+4** | 일치 |
+| stale·retry류·already | 0 | 0 | 0 | 일치(재시도·중복 없음) |
+| `pg_worker_process_seconds_count` | 시리즈 없음 | 4 | +4 | 일치(첫 관측 때 시리즈 생성) |
+| `pg_job_e2e_seconds_count` | 0 | 4 | **+4** | 일치, 합 5.056초(평균 1.26초) |
+| `pg_queue_wait_seconds_count` | 0 | 4 | **+4** | 일치, 합 0.022초 |
+| `pg_inference_stage_seconds_count` decode·window·sticker | 시리즈 없음 | 각 4 | +4 | 일치 |
+| `pg_inference_requests_total{outcome="ok"}` | 시리즈 없음 | 4 | +4 | 일치 |
+| `pg_worker_timing_skipped_total` | 0 | 0 | 0 | 시각 누락·음수 없음 |
+| 모델 Ready Pod / Worker 타깃 UP | 2 / 2 | 2 / 2 | - | 변화 없음 |
+| SQS 메인·DLQ·`dead_lettered` | 0 | 0 | - | 정상 소화 |
+
+중복 집계·누락 없음: 모든 계수가 정확히 4. 지표 E2E 평균(1.264초)이 DB 시각차 평균(1.258초)과 거의 같고(지표는 커밋 직후 시계라 수 ms 더 큼) 정의대로 동작함을 보여 준다. 큐 대기 합이 매우 작은 것(건당 약 5 ms)은 Worker 가 비어 있어 장기 폴링으로 즉시 받았기 때문이며, SentTimestamp 와 Pod 시계가 같은 초 안에 있다는 뜻이다(근사값, 정밀 측정이 아님).
+
+**Grafana(`pg2-inference`)**: 13개 패널의 쿼리를 전송 구간(19:35~)에 대해 범위 조회로 확인 — 데이터 있음: E2E p50/p95/p99(추정 1.5/1.95/1.99초, 4건의 버킷 보간 값), 처리량, 오류·재시도(0), Worker 처리 시간, 큐 대기, 추론 단계별(디코드 약 0.009초, 앞유리·스티커 버킷 보간 약 0.49초), 판정 결과, 모델 Ready, 모델 로딩/첫 추론, 수집 상태, 건너뜀(0). **4건 표본이므로 성능 결론은 내지 않는다**(분위수는 버킷 경계 영향이 크다).
+
+**발견·수정한 결함**: 패널 "10초 이내 판정 비율"이 No data 였다. `prometheus_client` 의 `le` 라벨 값은 `"10.0"` 인데 쿼리가 `le="10"` 이었다(알림 `PGE2EP95High` 은 `histogram_quantile` 이라 영향 없음). 로컬 수정: `build_dashboards.py` 와 JSON 재생성(`le="10.0"`, 실제 값 1.0 확인), 규칙 시험의 합성 시리즈 라벨도 `10.0`/`15.0` 으로 맞춤(promtool check·test 통과). **이 수정은 아직 배포되지 않았다**(config 커밋·push 필요, 이미지 변경 없음).
+
+**마무리 검증**: Worker 2/2·Backend 2/2·Relay 1/1·Frontend 1/1, Pod 재시작 0, Worker 타깃 2개 UP, 알림 규칙 12개 health=ok·전부 Inactive·firing 0, Worker·Relay 로그 오류 0, Slack receiver(`api_url_file`)·ExternalSecret(`slack-webhook`, `grafana-admin`) 유지, 메모리 Worker 894~926 Mi(사진 처리 후에도 증가 없음). 기존 데이터 보호: `p2_protect verify`(장비 15 제외) 전 테이블 PASS, 감사로그만 +1(키 회전 1회) = 의도한 증가. 테스트 데이터 증가는 EXP2 장비 1대의 작업·결과 4건, S3 inbox 4개, 감사로그 1건, 로그인 토큰 1건뿐. 공식 스냅샷·원본 실험 결과는 건드리지 않았다.
+
+**한계**: ① 사진 4장·정상 경로만 확인(실패·재시도·`effects_retry`·음수 시각은 단위 테스트로만 검증, 클러스터에서 장애 주입은 하지 않음). ② 분위수는 버킷 보간 추정, 큐 대기는 AWS·Pod 시계 근사. ③ `PGE2EP95High` 의 실제 평가는 표본 5건 미만이라 발동하지 않는 것이 정상이며 실제 경보 발생은 확인하지 못했다. ④ Slack 수신은 사용자가 직접 확인.
+
+**결론**: 관측성 3단계 계측·수집·시각화·알림 규칙은 실제 배포에서 정상 동작을 확인했다. 남은 것은 위 대시보드 수정 1건의 배포.

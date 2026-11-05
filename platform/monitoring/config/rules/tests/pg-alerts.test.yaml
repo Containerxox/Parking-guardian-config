@@ -336,9 +336,9 @@ tests:
   # --- PGE2EP95High: 버킷(le=10 에 60%, le=15 에 100%) -> p95 는 10~15 구간(>10) 이고 표본 충분 -> 울림 ---
   - interval: 1m
     input_series:
-      - series: 'pg_job_e2e_seconds_bucket{pod="w-a",le="10"}'
+      - series: 'pg_job_e2e_seconds_bucket{pod="w-a",le="10.0"}'
         values: '0+6x15'
-      - series: 'pg_job_e2e_seconds_bucket{pod="w-a",le="15"}'
+      - series: 'pg_job_e2e_seconds_bucket{pod="w-a",le="15.0"}'
         values: '0+10x15'
       - series: 'pg_job_e2e_seconds_bucket{pod="w-a",le="+Inf"}'
         values: '0+10x15'
@@ -358,7 +358,7 @@ tests:
   # 모두 10초 안(le=10 에 100%) -> p95 <= 10 -> 침묵
   - interval: 1m
     input_series:
-      - series: 'pg_job_e2e_seconds_bucket{pod="w-a",le="10"}'
+      - series: 'pg_job_e2e_seconds_bucket{pod="w-a",le="10.0"}'
         values: '0+10x15'
       - series: 'pg_job_e2e_seconds_bucket{pod="w-a",le="+Inf"}'
         values: '0+10x15'
@@ -371,9 +371,9 @@ tests:
   # 느리지만 표본이 5분에 2건뿐 -> 침묵(표본 부족)
   - interval: 1m
     input_series:
-      - series: 'pg_job_e2e_seconds_bucket{pod="w-a",le="10"}'
+      - series: 'pg_job_e2e_seconds_bucket{pod="w-a",le="10.0"}'
         values: '0x15'
-      - series: 'pg_job_e2e_seconds_bucket{pod="w-a",le="15"}'
+      - series: 'pg_job_e2e_seconds_bucket{pod="w-a",le="15.0"}'
         values: '0+0.4x15'
       - series: 'pg_job_e2e_seconds_bucket{pod="w-a",le="+Inf"}'
         values: '0+0.4x15'
