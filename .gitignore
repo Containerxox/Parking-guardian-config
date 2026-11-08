@@ -12,3 +12,30 @@ CLAUDE.md
 .claude/
 
 docs/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary and backup files
+*.tmp
+*.bak
+*.bak-*
+
+# Logs and Python caches (scripts/ and rules/tests/ run locally)
+*.log
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local render output and personal test manifests (Argo CD renders from Git; nothing generated is committed)
+rendered/
+*.rendered.yaml
+*.local.yaml
